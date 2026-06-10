@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Analyzer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- ===== HEADER ===== -->
+    <header class="header">
+      <h1 class="logo">📈 Stock Analyzer</h1>
+      <p class="tagline">Multi-factor analysis: technical, fundamental, momentum, sentiment &amp; analyst signals</p>
+    </header>
+
+    <!-- ===== SEARCH BAR ===== -->
+    <section class="search-section">
+      <form id="search-form" class="search-form">
+        <input
+          type="text"
+          id="ticker-input"
+          class="ticker-input"
+          placeholder="Enter a ticker (e.g. AAPL, MSFT, NVDA)"
+          autocomplete="off"
+          maxlength="10"
+        />
+        <button type="submit" id="analyze-btn" class="analyze-btn">Analyze</button>
+      </form>
+      <p class="hint">Tip: try AAPL, MSFT, GOOGL, TSLA, or NVDA</p>
+    </section>
+
+    <!-- ===== LOADING STATE ===== -->
+    <section id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p id="loading-text">Fetching data and crunching the numbers…</p>
+    </section>
+
+    <!-- ===== ERROR STATE ===== -->
+    <section id="error" class="error hidden">
+      <p id="error-text">Something went wrong.</p>
+    </section>
+
+    <!-- ===== RESULTS ===== -->
+    <section id="results" class="results hidden">
+
+      <!-- Top summary card -->
+      <div class="summary-card">
+        <div class="summary-left">
+          <h2 id="result-ticker" class="result-ticker">AAPL</h2>
+          <p id="result-name" class="result-name">Apple Inc.</p>
+          <span id="result-updated" class="result-updated">Updated: —</span>
+        </div>
+
+        <div class="summary-right">
+          <div class="overall-score">
+            <span class="overall-label">Overall Score</span>
+            <span id="overall-value" class="overall-value">0</span>
+            <span class="overall-max">/100</span>
+          </div>
+          <div id="recommendation-badge" class="recommendation-badge">HOLD</div>
+        </div>
+      </div>
+
+      <!-- Key stats row -->
+      <div class="stats-row">
+        <div class="stat-box">
+          <span class="stat-label">Confidence</span>
+          <span id="confidence-value" class="stat-value">—</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Risk Level</span>
+          <span id="risk-value" class="stat-value">—</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Current Price</span>
+          <span id="price-value" class="stat-value">—</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">Price Target</span>
+          <span id="target-value" class="stat-value">—</span>
+        </div>
+      </div>
+
+      <!-- Sub-scores -->
+      <div class="scores-grid">
+        <div class="score-card">
+          <div class="score-card-head">
+            <span class="score-name">Technical</span>
+            <span id="technical-num" class="score-num">0</span>
+          </div>
+          <div class="score-bar"><div id="technical-bar" class="score-fill"></div></div>
+        </div>
+
+        <div class="score-card">
+          <div class="score-card-head">
+            <span class="score-name">Fundamental</span>
+            <span id="fundamental-num" class="score-num">0</span>
+          </div>
+          <div class="score-bar"><div id="fundamental-bar" class="score-fill"></div></div>
+        </div>
+
+        <div class="score-card">
+          <div class="score-card-head">
+            <span class="score-name">Momentum</span>
+            <span id="momentum-num" class="score-num">0</span>
+          </div>
+          <div class="score-bar"><div id="momentum-bar" class="score-fill"></div></div>
+        </div>
+
+        <div class="score-card">
+          <div class="score-card-head">
+            <span class="score-name">Sentiment</span>
+            <span id="sentiment-num" class="score-num">0</span>
+          </div>
+          <div class="score-bar"><div id="sentiment-bar" class="score-fill"></div></div>
+        </div>
+
+        <div class="score-card">
+          <div class="score-card-head">
+            <span class="score-name">Analyst</span>
+            <span id="analyst-num" class="score-num">0</span>
+          </div>
+          <div class="score-bar"><div id="analyst-bar" class="score-fill"></div></div>
+        </div>
+      </div>
+
+      <!-- Factors: bullish vs bearish -->
+      <div class="factors-grid">
+        <div class="factors-card bullish">
+          <h3 class="factors-title">🟢 Bullish Factors</h3>
+          <ul id="bullish-list" class="factors-list"></ul>
+        </div>
+        <div class="factors-card bearish">
+          <h3 class="factors-title">🔴 Bearish Factors</h3>
+          <ul id="bearish-list" class="factors-list"></ul>
+        </div>
+      </div>
+
+      <!-- Explanation -->
+      <div class="explanation-card">
+        <h3 class="explanation-title">Analysis Details</h3>
+        <p id="explanation-text" class="explanation-text">—</p>
+      </div>
+
+      <!-- Data sources -->
+      <div class="sources-line">
+        <span class="sources-label">Data sources:</span>
+        <span id="sources-value">—</span>
+      </div>
+
+    </section>
+
+    <!-- ===== FOOTER ===== -->
+    <footer class="footer">
+      <p>For informational and educational purposes only. Not financial advice.</p>
+    </footer>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
