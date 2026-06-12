@@ -1,18 +1,17 @@
 /* ============================================================
-   Stock Analyzer — script.js
-   Price history: Stooq (primary) → Yahoo Finance (fallback),
-   both via a CORS proxy. Fundamentals / analyst / news: Finnhub.
+   Stock Analyzer — script.js  (DEEP ANALYSIS VERSION)
+   Price history: Stooq → Yahoo fallback (via CORS proxy)
+   Data: Finnhub (profile, quote, metrics, analyst, news, earnings)
+   AI sentiment: transformers.js in-browser (keyword fallback)
    ============================================================ */
 
 // ⬇️ PASTE YOUR FREE FINNHUB KEY HERE
 const FINNHUB_KEY = "d8kpsp1r01qut1f6usrgd8kpsp1r01qut1f6uss0";
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
-
-// Public CORS proxy. Wraps a URL so the browser is allowed to read it.
 const PROXY = "https://corsproxy.io/?url=";
 
-/* ---------- DOM references ---------- */
+/* ---------- DOM ---------- */
 const form = document.getElementById("search-form");
 const input = document.getElementById("ticker-input");
 const analyzeBtn = document.getElementById("analyze-btn");
@@ -22,14 +21,12 @@ const errorEl = document.getElementById("error");
 const errorText = document.getElementById("error-text");
 const resultsEl = document.getElementById("results");
 
-/* ---------- UI state helpers ---------- */
 function show(el) { el.classList.remove("hidden"); }
 function hide(el) { el.classList.add("hidden"); }
 
-function setLoading(isLoading, msg) {
-  if (isLoading) {
-    hide(errorEl);
-    hide(resultsEl);
+function setLoading(on, msg) {
+  if (on) {
+    hide(errorEl); hide(resultsEl);
     if (msg) loadingText.textContent = msg;
     show(loadingEl);
     analyzeBtn.disabled = true;
@@ -41,104 +38,72 @@ function setLoading(isLoading, msg) {
 
 function showError(msg) {
   setLoading(false);
-  hide(resultsEl);            // <-- hides the leftover AAPL placeholder on error
+  hide(resultsEl);
   errorText.textContent = msg;
   show(errorEl);
 }
 
+function clamp(v, lo = 0, hi = 100) { return Math.max(lo, Math.min(hi, v)); }
+
 /* ============================================================
    DATA FETCHING
    ============================================================ */
+function proxied(url) { return PROXY + encodeURIComponent(url); }
 
-/* Wrap any URL through the CORS proxy */
-function proxied(url) {
-  return PROXY + encodeURIComponent(url);
-}
-
-/* ---- Primary: Stooq daily CSV ---- */
 async function fetchFromStooq(ticker) {
-  const symbol = ticker.toLowerCase() + ".us";
-  const url = `https://stooq.com/q/d/l/?s=${symbol}&i=d`;
+  const url = `https://stooq.com/q/d/l/?s=${ticker.toLowerCase()}.us&i=d`;
   const res = await fetch(proxied(url));
   if (!res.ok) throw new Error("stooq-failed");
-
   const text = await res.text();
-  if (text.trim().toLowerCase().startsWith("no data") || !text.includes(",")) {
-    throw new Error("stooq-nodata");
-  }
-
+  if (text.trim().toLowerCase().startsWith("no data") || !text.includes(",")) throw new Error("stooq-nodata");
   const lines = text.trim().split("\n");
   if (!lines[0].toLowerCase().startsWith("date")) throw new Error("stooq-format");
-
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const p = lines[i].split(",");
     if (p.length < 5) continue;
     const close = parseFloat(p[4]);
     if (Number.isNaN(close)) continue;
-    rows.push({
-      date: p[0],
-      open: parseFloat(p[1]),
-      high: parseFloat(p[2]),
-      low: parseFloat(p[3]),
-      close,
-      volume: parseFloat(p[5]) || 0,
-    });
+    rows.push({ date: p[0], open: +p[1], high: +p[2], low: +p[3], close, volume: +p[5] || 0 });
   }
-  if (rows.length < 50) throw new Error("stooq-short");
+  if (rows.length < 60) throw new Error("stooq-short");
   return rows;
 }
 
-/* ---- Fallback: Yahoo Finance chart endpoint (1 year daily) ---- */
 async function fetchFromYahoo(ticker) {
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}` +
-    `?range=1y&interval=1d`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2y&interval=1d`;
   const res = await fetch(proxied(url));
   if (!res.ok) throw new Error("yahoo-failed");
-
   const data = await res.json();
-  const result = data?.chart?.result?.[0];
-  if (!result) throw new Error("yahoo-nodata");
-
-  const ts = result.timestamp || [];
-  const q = result.indicators?.quote?.[0] || {};
+  const r = data?.chart?.result?.[0];
+  if (!r) throw new Error("yahoo-nodata");
+  const ts = r.timestamp || [];
+  const q = r.indicators?.quote?.[0] || {};
   const rows = [];
   for (let i = 0; i < ts.length; i++) {
     const close = q.close?.[i];
     if (close == null) continue;
     rows.push({
       date: new Date(ts[i] * 1000).toISOString().slice(0, 10),
-      open: q.open?.[i] ?? close,
-      high: q.high?.[i] ?? close,
-      low: q.low?.[i] ?? close,
-      close,
-      volume: q.volume?.[i] ?? 0,
+      open: q.open?.[i] ?? close, high: q.high?.[i] ?? close,
+      low: q.low?.[i] ?? close, close, volume: q.volume?.[i] ?? 0,
     });
   }
-  if (rows.length < 50) throw new Error("yahoo-short");
+  if (rows.length < 60) throw new Error("yahoo-short");
   return rows;
 }
 
-/* ---- Price history with automatic fallback ---- */
 async function fetchPriceHistory(ticker) {
-  try {
-    return { rows: await fetchFromStooq(ticker), source: "Stooq" };
-  } catch (e) {
+  try { return { rows: await fetchFromStooq(ticker), source: "Stooq" }; }
+  catch (e) {
     console.warn("Stooq failed, trying Yahoo:", e.message);
-    try {
-      return { rows: await fetchFromYahoo(ticker), source: "Yahoo Finance" };
-    } catch (e2) {
-      console.warn("Yahoo also failed:", e2.message);
-      throw new Error(
-        `Couldn't load price history for "${ticker.toUpperCase()}". ` +
-        `Check the ticker symbol, or the data source may be temporarily down.`
-      );
+    try { return { rows: await fetchFromYahoo(ticker), source: "Yahoo Finance" }; }
+    catch (e2) {
+      throw new Error(`Couldn't load price history for "${ticker.toUpperCase()}". Check the ticker, or the source may be down.`);
     }
   }
 }
 
-/* ---- Finnhub helpers ---- */
 async function finnhub(path, params = {}) {
   const qs = new URLSearchParams({ ...params, token: FINNHUB_KEY });
   const res = await fetch(`${FINNHUB_BASE}${path}?${qs}`);
@@ -148,31 +113,32 @@ async function finnhub(path, params = {}) {
   return res.json();
 }
 
-function fetchProfile(t)         { return finnhub("/stock/profile2", { symbol: t }); }
-function fetchQuote(t)           { return finnhub("/quote", { symbol: t }); }
-function fetchMetrics(t)         { return finnhub("/stock/metric", { symbol: t, metric: "all" }); }
-function fetchRecommendations(t) { return finnhub("/stock/recommendation", { symbol: t }); }
+const fetchProfile = (t) => finnhub("/stock/profile2", { symbol: t });
+const fetchQuote = (t) => finnhub("/quote", { symbol: t });
+const fetchMetrics = (t) => finnhub("/stock/metric", { symbol: t, metric: "all" });
+const fetchRecommendations = (t) => finnhub("/stock/recommendation", { symbol: t });
+const fetchEarnings = (t) => finnhub("/stock/earnings", { symbol: t });
 
 function fetchNews(t) {
-  const to = new Date();
-  const from = new Date();
+  const to = new Date(), from = new Date();
   from.setDate(to.getDate() - 30);
-  const fmt = (d) => d.toISOString().slice(0, 10);
-  return finnhub("/company-news", { symbol: t, from: fmt(from), to: fmt(to) });
+  const f = (d) => d.toISOString().slice(0, 10);
+  return finnhub("/company-news", { symbol: t, from: f(from), to: f(to) });
 }
 
 /* ============================================================
-   TECHNICAL INDICATORS
+   INDICATORS
    ============================================================ */
-function sma(values, period) {
-  if (values.length < period) return null;
-  const slice = values.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / period;
+function sma(values, period, offset = 0) {
+  const end = values.length - offset;
+  if (end < period) return null;
+  let s = 0;
+  for (let i = end - period; i < end; i++) s += values[i];
+  return s / period;
 }
 
 function emaSeries(values, period) {
-  const k = 2 / (period + 1);
-  const out = [];
+  const k = 2 / (period + 1), out = [];
   let prev;
   for (let i = 0; i < values.length; i++) {
     if (i < period - 1) { out.push(null); continue; }
@@ -183,121 +149,222 @@ function emaSeries(values, period) {
   return out;
 }
 
-function calcRSI(closes, period = 14) {
-  if (closes.length < period + 1) return 50;
+function rsiSeries(closes, period = 14) {
+  const out = new Array(closes.length).fill(null);
+  if (closes.length < period + 1) return out;
   let gains = 0, losses = 0;
   for (let i = 1; i <= period; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff; else losses -= diff;
+    const d = closes[i] - closes[i - 1];
+    if (d >= 0) gains += d; else losses -= d;
   }
-  let avgGain = gains / period, avgLoss = losses / period;
+  let ag = gains / period, al = losses / period;
+  out[period] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
   for (let i = period + 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
+    const d = closes[i] - closes[i - 1];
+    ag = (ag * (period - 1) + (d > 0 ? d : 0)) / period;
+    al = (al * (period - 1) + (d < 0 ? -d : 0)) / period;
+    out[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
   }
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
+  return out;
 }
 
-function calcMACD(closes) {
-  const fast = emaSeries(closes, 12);
-  const slow = emaSeries(closes, 26);
-  const macdLine = closes.map((_, i) =>
-    fast[i] != null && slow[i] != null ? fast[i] - slow[i] : null
-  );
-  const valid = macdLine.filter((v) => v != null);
-  const signalSeries = emaSeries(valid, 9);
-  return {
-    macd: macdLine[macdLine.length - 1] ?? 0,
-    signal: signalSeries[signalSeries.length - 1] ?? 0,
-  };
+function macdSeries(closes) {
+  const fast = emaSeries(closes, 12), slow = emaSeries(closes, 26);
+  const line = closes.map((_, i) => (fast[i] != null && slow[i] != null ? fast[i] - slow[i] : null));
+  const valid = line.filter((v) => v != null);
+  const sig = emaSeries(valid, 9);
+  // align signal back to full length
+  const pad = line.length - valid.length;
+  const signal = new Array(pad).fill(null).concat(sig);
+  return { line, signal };
 }
 
-function bollingerPosition(closes, period = 20) {
-  if (closes.length < period) return 0.5;
+function bollinger(closes, period = 20) {
+  if (closes.length < period) return null;
   const slice = closes.slice(-period);
   const mean = slice.reduce((a, b) => a + b, 0) / period;
   const std = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period);
   const upper = mean + 2 * std, lower = mean - 2 * std;
   const price = closes[closes.length - 1];
-  if (upper === lower) return 0.5;
-  return (price - lower) / (upper - lower);
+  return {
+    pos: upper === lower ? 0.5 : (price - lower) / (upper - lower),
+    width: mean ? ((upper - lower) / mean) * 100 : 0, // squeeze detection
+  };
+}
+
+function stochastic(rows, kPeriod = 14) {
+  if (rows.length < kPeriod) return null;
+  const slice = rows.slice(-kPeriod);
+  const hi = Math.max(...slice.map((r) => r.high));
+  const lo = Math.min(...slice.map((r) => r.low));
+  const c = rows[rows.length - 1].close;
+  return hi === lo ? 50 : ((c - lo) / (hi - lo)) * 100;
+}
+
+function annualizedVol(closes, lookback = 20) {
+  if (closes.length < lookback + 1) return null;
+  const rets = [];
+  for (let i = closes.length - lookback; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const v = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length);
+  return v * Math.sqrt(252) * 100;
+}
+
+function maxDrawdown(closes, lookback = 252) {
+  const slice = closes.slice(-lookback);
+  let peak = slice[0], maxDD = 0;
+  for (const c of slice) {
+    if (c > peak) peak = c;
+    const dd = (peak - c) / peak;
+    if (dd > maxDD) maxDD = dd;
+  }
+  return maxDD * 100;
 }
 
 /* ============================================================
-   SCORING
+   SCORING — TECHNICAL (deep)
    ============================================================ */
-function clamp(v, lo = 0, hi = 100) { return Math.max(lo, Math.min(hi, v)); }
-
 function scoreTechnical(rows) {
   const closes = rows.map((r) => r.close);
   const volumes = rows.map((r) => r.volume);
   const price = closes[closes.length - 1];
-  const rsi = calcRSI(closes);
-  const { macd, signal } = calcMACD(closes);
-  const bbPos = bollingerPosition(closes);
-  const ma20 = sma(closes, 20), ma50 = sma(closes, 50);
-
   let score = 50;
   const bullish = [], bearish = [];
 
-  if (rsi < 30)      { score += 15; bullish.push(`RSI oversold (${rsi.toFixed(1)})`); }
-  else if (rsi > 70) { score -= 15; bearish.push(`RSI overbought (${rsi.toFixed(1)})`); }
+  // RSI level + direction
+  const rsiS = rsiSeries(closes);
+  const rsi = rsiS[rsiS.length - 1] ?? 50;
+  const rsiPrev = rsiS[rsiS.length - 6] ?? rsi;
+  if (rsi < 30) { score += 12; bullish.push(`RSI oversold (${rsi.toFixed(1)})`); }
+  else if (rsi > 70) { score -= 12; bearish.push(`RSI overbought (${rsi.toFixed(1)})`); }
+  if (rsi > rsiPrev + 5 && rsi < 60) { score += 4; bullish.push("RSI recovering upward"); }
+  else if (rsi < rsiPrev - 5 && rsi > 40) { score -= 4; bearish.push("RSI rolling over"); }
 
-  if (macd > signal) { score += 10; bullish.push("MACD above signal line"); }
-  else               { score -= 10; bearish.push("MACD below signal line"); }
+  // MACD: position + histogram momentum
+  const { line, signal } = macdSeries(closes);
+  const macd = line[line.length - 1] ?? 0;
+  const sig = signal[signal.length - 1] ?? 0;
+  const hist = macd - sig;
+  const histPrev = (line[line.length - 4] ?? 0) - (signal[signal.length - 4] ?? 0);
+  if (hist > 0 && hist > histPrev) { score += 10; bullish.push("MACD bullish and strengthening"); }
+  else if (hist > 0) { score += 6; bullish.push("MACD above signal"); }
+  else if (hist < 0 && hist < histPrev) { score -= 10; bearish.push("MACD bearish and weakening"); }
+  else { score -= 6; bearish.push("MACD below signal"); }
 
-  if (bbPos < 0.1)      { score += 12; bullish.push("Price near lower Bollinger Band"); }
-  else if (bbPos > 0.9) { score -= 12; bearish.push("Price near upper Bollinger Band"); }
-
+  // Trend STRUCTURE + STRENGTH (MA slopes)
+  const ma20 = sma(closes, 20), ma50 = sma(closes, 50), ma200 = sma(closes, 200);
+  const ma20Prev = sma(closes, 20, 10), ma50Prev = sma(closes, 50, 10);
   if (ma20 && ma50) {
-    if (price > ma20 && ma20 > ma50)      { score += 12; bullish.push("Uptrend (price > MA20 > MA50)"); }
-    else if (price < ma20 && ma20 < ma50) { score -= 12; bearish.push("Downtrend (price < MA20 < MA50)"); }
+    const slope20 = ma20Prev ? ((ma20 - ma20Prev) / ma20Prev) * 100 : 0;
+    const slope50 = ma50Prev ? ((ma50 - ma50Prev) / ma50Prev) * 100 : 0;
+    if (price > ma20 && ma20 > ma50 && slope20 > 0.5) {
+      score += 14; bullish.push(`Strong uptrend (MA20 slope +${slope20.toFixed(1)}%/2wk)`);
+    } else if (price > ma20 && ma20 > ma50) {
+      score += 8; bullish.push("Uptrend structure intact");
+    } else if (price < ma20 && ma20 < ma50 && slope20 < -0.5) {
+      score -= 14; bearish.push(`Strong downtrend (MA20 slope ${slope20.toFixed(1)}%/2wk)`);
+    } else if (price < ma20 && ma20 < ma50) {
+      score -= 8; bearish.push("Downtrend structure");
+    }
+    // Golden / death cross within last ~15 sessions
+    const ma50_15 = sma(closes, 50, 15), ma200_15 = sma(closes, 200, 15);
+    if (ma200 && ma200_15 && ma50_15) {
+      if (ma50 > ma200 && ma50_15 <= ma200_15) { score += 8; bullish.push("Recent golden cross (MA50 > MA200)"); }
+      if (ma50 < ma200 && ma50_15 >= ma200_15) { score -= 8; bearish.push("Recent death cross (MA50 < MA200)"); }
+    }
+    if (ma200 && price > ma200) { score += 4; bullish.push("Above 200-day MA (long-term uptrend)"); }
+    else if (ma200 && price < ma200) { score -= 4; bearish.push("Below 200-day MA"); }
   }
 
-  const recentVol = sma(volumes, 5);
-  const avgVol = sma(volumes, Math.min(volumes.length, 60));
-  if (recentVol && avgVol && recentVol > avgVol * 1.4) { score += 5; bullish.push("Volume above average"); }
+  // Bollinger position + squeeze
+  const bb = bollinger(closes);
+  if (bb) {
+    if (bb.pos < 0.08) { score += 8; bullish.push("At lower Bollinger Band"); }
+    else if (bb.pos > 0.92) { score -= 8; bearish.push("At upper Bollinger Band"); }
+    if (bb.width < 6) bullish.push(`Bollinger squeeze (width ${bb.width.toFixed(1)}%) — big move may be coming`);
+  }
+
+  // Stochastic confirmation
+  const stoch = stochastic(rows);
+  if (stoch != null) {
+    if (stoch < 20 && rsi < 40) { score += 5; bullish.push("Stochastic confirms oversold"); }
+    else if (stoch > 80 && rsi > 60) { score -= 5; bearish.push("Stochastic confirms overbought"); }
+  }
+
+  // Volume trend on up vs down days (accumulation/distribution feel)
+  if (rows.length >= 20) {
+    let upVol = 0, downVol = 0;
+    for (let i = rows.length - 20; i < rows.length; i++) {
+      if (rows[i].close >= rows[i].open) upVol += rows[i].volume;
+      else downVol += rows[i].volume;
+    }
+    if (upVol > downVol * 1.4) { score += 6; bullish.push("Volume concentrated on up days (accumulation)"); }
+    else if (downVol > upVol * 1.4) { score -= 6; bearish.push("Volume concentrated on down days (distribution)"); }
+  }
 
   return {
     score: clamp(score), bullish, bearish,
-    detail: `RSI=${rsi.toFixed(1)}, MACD=${(macd - signal).toFixed(3)}, BB_pos=${bbPos.toFixed(2)}`,
+    detail: `RSI=${rsi.toFixed(1)}, MACD_hist=${hist.toFixed(3)}, BB_pos=${bb ? bb.pos.toFixed(2) : "N/A"}`,
   };
 }
 
+/* ============================================================
+   SCORING — MOMENTUM & RISK (deep)
+   ============================================================ */
 function scoreMomentum(rows) {
   const c = rows.map((r) => r.close);
   const n = c.length;
-  const r1w = n >= 6  ? (c[n-1] / c[n-6]  - 1) * 100 : 0;
-  const r1m = n >= 21 ? (c[n-1] / c[n-21] - 1) * 100 : 0;
-  const r3m = n >= 64 ? (c[n-1] / c[n-64] - 1) * 100 : 0;
-
+  const ret = (d) => (n > d ? (c[n - 1] / c[n - 1 - d] - 1) * 100 : null);
+  const r1w = ret(5), r1m = ret(21), r3m = ret(63), r6m = ret(126);
   let score = 50;
   const bullish = [], bearish = [];
 
-  if (r1w > 5)        { score += 8;  bullish.push(`Strong 1-week move (+${r1w.toFixed(1)}%)`); }
-  else if (r1w < -5)  { score -= 8;  bearish.push(`Weak 1-week move (${r1w.toFixed(1)}%)`); }
-  if (r1m > 10)       { score += 14; bullish.push(`Strong 1-month move (+${r1m.toFixed(1)}%)`); }
-  else if (r1m < -10) { score -= 14; bearish.push(`Weak 1-month move (${r1m.toFixed(1)}%)`); }
-  if (r3m > 20)       { score += 10; bullish.push(`Strong 3-month move (+${r3m.toFixed(1)}%)`); }
-  else if (r3m < -20) { score -= 10; bearish.push(`Weak 3-month move (${r3m.toFixed(1)}%)`); }
+  // Multi-timeframe alignment matters more than any single number
+  const frames = [r1w, r1m, r3m].filter((v) => v != null);
+  const allUp = frames.length >= 3 && frames.every((v) => v > 0);
+  const allDown = frames.length >= 3 && frames.every((v) => v < 0);
+  if (allUp) { score += 10; bullish.push("Positive momentum across all timeframes"); }
+  if (allDown) { score -= 10; bearish.push("Negative momentum across all timeframes"); }
 
-  if (n >= 21) {
-    const rets = [];
-    for (let i = n - 20; i < n; i++) rets.push(c[i] / c[i - 1] - 1);
-    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
-    const annVol = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length) * Math.sqrt(252) * 100;
-    if (annVol > 50)      { score -= 5; bearish.push(`High volatility (${annVol.toFixed(0)}%)`); }
-    else if (annVol < 20) { score += 3; bullish.push(`Low volatility (${annVol.toFixed(0)}%)`); }
+  if (r1m != null) {
+    if (r1m > 10) { score += 10; bullish.push(`Strong month (+${r1m.toFixed(1)}%)`); }
+    else if (r1m < -10) { score -= 10; bearish.push(`Weak month (${r1m.toFixed(1)}%)`); }
+  }
+  if (r3m != null) {
+    if (r3m > 20) { score += 8; bullish.push(`Strong quarter (+${r3m.toFixed(1)}%)`); }
+    else if (r3m < -20) { score -= 8; bearish.push(`Weak quarter (${r3m.toFixed(1)}%)`); }
+  }
+  // Mean reversion sanity: parabolic short-term spikes get a caution
+  if (r1w != null && r1w > 15) { score -= 4; bearish.push(`Parabolic week (+${r1w.toFixed(1)}%) — pullback risk`); }
+
+  const vol = annualizedVol(c);
+  if (vol != null) {
+    if (vol > 55) { score -= 6; bearish.push(`High volatility (${vol.toFixed(0)}% annualized)`); }
+    else if (vol < 18) { score += 3; bullish.push(`Low volatility (${vol.toFixed(0)}%)`); }
   }
 
-  return { score: clamp(score), bullish, bearish, r1m };
+  const dd = maxDrawdown(c);
+  if (dd > 35) { score -= 5; bearish.push(`Deep 1-yr drawdown (-${dd.toFixed(0)}% from peak)`); }
+  else if (dd < 12) { score += 4; bullish.push(`Shallow drawdowns (max -${dd.toFixed(0)}%)`); }
+
+  return { score: clamp(score), bullish, bearish, r1m: r1m ?? 0, vol, drawdown: dd };
 }
 
-function scoreFundamental(metricData) {
+/* ============================================================
+   SCORING — FUNDAMENTAL (sector-aware, deep)
+   ============================================================ */
+function peThresholds(industry) {
+  const ind = (industry || "").toLowerCase();
+  const growth = ["technology", "software", "semiconductors", "biotechnology", "media", "communication", "internet"];
+  const value = ["bank", "insurance", "energy", "utilities", "oil", "financial", "mining"];
+  if (growth.some((g) => ind.includes(g))) return { cheap: 35, expensive: 55 };
+  if (value.some((v) => ind.includes(v))) return { cheap: 12, expensive: 22 };
+  return { cheap: 18, expensive: 35 };
+}
+
+function scoreFundamental(metricData, profileD, price, earningsD) {
   const m = (metricData && metricData.metric) || {};
+  const industry = profileD?.finnhubIndustry;
   let score = 50;
   const bullish = [], bearish = [];
 
@@ -305,82 +372,193 @@ function scoreFundamental(metricData) {
   const roe = m.roeTTM;
   const debtEq = m["totalDebt/totalEquityQuarterly"] ?? m.longTermDebt2EquityQuarterly;
   const revGrowth = m.revenueGrowthTTMYoy;
+  const epsGrowth = m.epsGrowthTTMYoy;
   const netMargin = m.netProfitMarginTTM;
+  const grossMargin = m.grossMarginTTM;
+  const divYield = m.currentDividendYieldTTM;
+  const wkHigh = m["52WeekHigh"], wkLow = m["52WeekLow"];
 
+  // Sector-aware valuation
+  const th = peThresholds(industry);
   if (pe != null) {
-    if (pe > 8 && pe < 18) { score += 12; bullish.push(`Attractive P/E (${pe.toFixed(1)})`); }
-    else if (pe > 35)      { score -= 12; bearish.push(`High P/E (${pe.toFixed(1)})`); }
-    else if (pe < 0)       { score -= 8;  bearish.push("Negative earnings (no P/E)"); }
-  }
-  if (roe != null) {
-    if (roe > 18)      { score += 12; bullish.push(`Excellent ROE (${roe.toFixed(1)}%)`); }
-    else if (roe > 12) { score += 8;  bullish.push(`Good ROE (${roe.toFixed(1)}%)`); }
-    else if (roe < 5)  { score -= 8;  bearish.push(`Weak ROE (${roe.toFixed(1)}%)`); }
-  }
-  if (debtEq != null) {
-    if (debtEq < 0.4)      { score += 8;  bullish.push("Low debt-to-equity"); }
-    else if (debtEq > 1.5) { score -= 12; bearish.push(`High debt-to-equity (${debtEq.toFixed(2)})`); }
-  }
-  if (revGrowth != null) {
-    if (revGrowth > 15)      { score += 14; bullish.push(`Strong revenue growth (${revGrowth.toFixed(1)}%)`); }
-    else if (revGrowth < -5) { score -= 12; bearish.push(`Declining revenue (${revGrowth.toFixed(1)}%)`); }
-  }
-  if (netMargin != null) {
-    if (netMargin > 20)     { score += 6; bullish.push(`High net margin (${netMargin.toFixed(1)}%)`); }
-    else if (netMargin < 0) { score -= 8; bearish.push("Unprofitable (negative margin)"); }
+    if (pe > 0 && pe < th.cheap) { score += 12; bullish.push(`P/E ${pe.toFixed(1)} reasonable for ${industry || "sector"}`); }
+    else if (pe > th.expensive) { score -= 12; bearish.push(`P/E ${pe.toFixed(1)} expensive for ${industry || "sector"}`); }
+    else if (pe < 0) { score -= 8; bearish.push("Negative earnings (no meaningful P/E)"); }
   }
 
-  const detail = `P/E=${pe != null ? pe.toFixed(1) : "N/A"}, ROE=${roe != null ? roe.toFixed(1) + "%" : "N/A"}, RevGrowth=${revGrowth != null ? revGrowth.toFixed(1) + "%" : "N/A"}`;
-  return { score: clamp(score), bullish, bearish, detail };
+  // Growth-adjusted valuation (homemade PEG)
+  if (pe != null && pe > 0 && epsGrowth != null && epsGrowth > 0) {
+    const peg = pe / epsGrowth;
+    if (peg < 1.2) { score += 8; bullish.push(`Cheap vs growth (PEG ≈ ${peg.toFixed(2)})`); }
+    else if (peg > 3) { score -= 6; bearish.push(`Expensive vs growth (PEG ≈ ${peg.toFixed(2)})`); }
+  }
+
+  // Quality
+  if (roe != null) {
+    if (roe > 20) { score += 10; bullish.push(`Excellent ROE (${roe.toFixed(1)}%)`); }
+    else if (roe > 12) { score += 6; bullish.push(`Solid ROE (${roe.toFixed(1)}%)`); }
+    else if (roe < 5) { score -= 7; bearish.push(`Weak ROE (${roe.toFixed(1)}%)`); }
+  }
+  if (grossMargin != null && grossMargin > 50) { score += 4; bullish.push(`Strong gross margin (${grossMargin.toFixed(0)}%) — pricing power`); }
+  if (netMargin != null) {
+    if (netMargin > 20) { score += 5; bullish.push(`High net margin (${netMargin.toFixed(1)}%)`); }
+    else if (netMargin < 0) { score -= 8; bearish.push("Currently unprofitable"); }
+  }
+
+  // Balance sheet
+  if (debtEq != null) {
+    if (debtEq < 0.4) { score += 6; bullish.push("Conservative balance sheet (low debt)"); }
+    else if (debtEq > 2) { score -= 12; bearish.push(`Heavy debt load (D/E ${debtEq.toFixed(2)})`); }
+    else if (debtEq > 1.2) { score -= 6; bearish.push(`Elevated debt (D/E ${debtEq.toFixed(2)})`); }
+  }
+
+  // Growth
+  if (revGrowth != null) {
+    if (revGrowth > 15) { score += 10; bullish.push(`Strong revenue growth (${revGrowth.toFixed(1)}%)`); }
+    else if (revGrowth < -5) { score -= 10; bearish.push(`Shrinking revenue (${revGrowth.toFixed(1)}%)`); }
+  }
+
+  // Earnings surprise track record (last 4 quarters)
+  if (Array.isArray(earningsD) && earningsD.length > 0) {
+    const last4 = earningsD.slice(0, 4);
+    const beats = last4.filter((e) => e.surprise != null && e.surprise > 0).length;
+    const misses = last4.filter((e) => e.surprise != null && e.surprise < 0).length;
+    if (beats >= 3) { score += 8; bullish.push(`Beat earnings estimates ${beats} of last ${last4.length} quarters`); }
+    else if (misses >= 2) { score -= 8; bearish.push(`Missed estimates ${misses} of last ${last4.length} quarters`); }
+  }
+
+  // Dividend
+  if (divYield != null && divYield > 2 && divYield < 6) { score += 3; bullish.push(`Pays dividend (${divYield.toFixed(1)}%)`); }
+
+  // 52-week range position
+  let rangePos = null;
+  if (wkHigh && wkLow && wkHigh > wkLow && price) {
+    rangePos = (price - wkLow) / (wkHigh - wkLow);
+    if (rangePos > 0.85) { score += 4; bullish.push(`Near 52-week high (${(rangePos * 100).toFixed(0)}% of range)`); }
+    else if (rangePos < 0.2) { score -= 4; bearish.push(`Near 52-week low (${(rangePos * 100).toFixed(0)}% of range) — investigate why`); }
+  }
+
+  return {
+    score: clamp(score), bullish, bearish,
+    detail: `P/E=${pe != null ? pe.toFixed(1) : "N/A"} (${industry || "?"}), ROE=${roe != null ? roe.toFixed(1) + "%" : "N/A"}, RevG=${revGrowth != null ? revGrowth.toFixed(1) + "%" : "N/A"}, 52wk=${rangePos != null ? (rangePos * 100).toFixed(0) + "%" : "N/A"}`,
+  };
 }
 
+/* ============================================================
+   SCORING — ANALYST (with trend over months)
+   ============================================================ */
 function scoreAnalyst(recArray) {
   let score = 50;
   const bullish = [], bearish = [];
   let rating = "N/A";
 
   if (Array.isArray(recArray) && recArray.length > 0) {
-    const l = recArray[0];
-    const { strongBuy = 0, buy = 0, hold = 0, sell = 0, strongSell = 0 } = l;
-    const total = strongBuy + buy + hold + sell + strongSell;
-    if (total > 0) {
-      const weighted = (strongBuy * 100 + buy * 75 + hold * 50 + sell * 25) / total;
-      score = weighted;
-      const bull = strongBuy + buy, bear = sell + strongSell;
-      if (weighted >= 75) rating = "Strong Buy";
-      else if (weighted >= 60) rating = "Buy";
-      else if (weighted >= 45) rating = "Hold";
-      else if (weighted >= 30) rating = "Sell";
-      else rating = "Strong Sell";
+    const weightedOf = (r) => {
+      const total = (r.strongBuy || 0) + (r.buy || 0) + (r.hold || 0) + (r.sell || 0) + (r.strongSell || 0);
+      if (!total) return null;
+      return ((r.strongBuy || 0) * 100 + (r.buy || 0) * 75 + (r.hold || 0) * 50 + (r.sell || 0) * 25) / total;
+    };
+    const now = weightedOf(recArray[0]);
+    if (now != null) {
+      score = now;
+      rating = now >= 75 ? "Strong Buy" : now >= 60 ? "Buy" : now >= 45 ? "Hold" : now >= 30 ? "Sell" : "Strong Sell";
+      const bull = (recArray[0].strongBuy || 0) + (recArray[0].buy || 0);
+      const bear = (recArray[0].sell || 0) + (recArray[0].strongSell || 0);
       if (bull > bear) bullish.push(`Analysts lean bullish (${bull} buy vs ${bear} sell)`);
       else if (bear > bull) bearish.push(`Analysts lean bearish (${bear} sell vs ${bull} buy)`);
+      // Trend: compare with ~3 months ago
+      if (recArray.length >= 4) {
+        const past = weightedOf(recArray[3]);
+        if (past != null) {
+          if (now > past + 5) { score = clamp(score + 5); bullish.push("Analyst sentiment improving over 3 months"); }
+          else if (now < past - 5) { score = clamp(score - 5); bearish.push("Analyst sentiment deteriorating over 3 months"); }
+        }
+      }
     }
   }
   return { score: clamp(score), bullish, bearish, rating };
 }
 
-function scoreSentiment(newsArray) {
+/* ============================================================
+   SCORING — AI SENTIMENT (transformers.js, keyword fallback)
+   ============================================================ */
+let sentimentPipeline = null;
+let sentimentLoadFailed = false;
+
+async function getSentimentModel() {
+  if (sentimentPipeline) return sentimentPipeline;
+  if (sentimentLoadFailed) return null;
+  try {
+    const { pipeline } = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
+    sentimentPipeline = await pipeline("sentiment-analysis");
+    return sentimentPipeline;
+  } catch (e) {
+    console.warn("AI model load failed, using keywords:", e);
+    sentimentLoadFailed = true;
+    return null;
+  }
+}
+
+function recencyWeight(unixSeconds) {
+  if (!unixSeconds) return 0.5;
+  const daysAgo = (Date.now() / 1000 - unixSeconds) / 86400;
+  return Math.max(0.35, 1 - daysAgo / 45);
+}
+
+function keywordSentiment(text) {
+  const pos = ["surge","beat","gain","growth","record","upgrade","strong","rally","profit","jump","outperform","raise"];
+  const neg = ["miss","fall","drop","loss","downgrade","weak","plunge","decline","cut","lawsuit","probe","warn"];
+  let s = 0;
+  const t = text.toLowerCase();
+  for (const w of pos) if (t.includes(w)) s++;
+  for (const w of neg) if (t.includes(w)) s--;
+  return s === 0 ? null : s > 0 ? 1 : -1;
+}
+
+async function scoreSentiment(newsArray) {
   let score = 50;
   const bullish = [], bearish = [];
-  const positive = ["surge","beat","gain","growth","record","upgrade","strong","rally","profit","jump","outperform","raise"];
-  const negative = ["miss","fall","drop","loss","downgrade","weak","plunge","decline","cut","lawsuit","probe","warn"];
+  if (!Array.isArray(newsArray) || newsArray.length === 0)
+    return { score, bullish, bearish, method: "no news" };
 
-  let net = 0, counted = 0;
-  if (Array.isArray(newsArray)) {
-    for (const item of newsArray.slice(0, 40)) {
-      const text = `${item.headline || ""} ${item.summary || ""}`.toLowerCase();
-      let local = 0;
-      for (const w of positive) if (text.includes(w)) local++;
-      for (const w of negative) if (text.includes(w)) local--;
-      if (local !== 0) { net += local; counted++; }
+  const items = newsArray.slice(0, 25);
+  const model = await getSentimentModel();
+  let method = model ? "AI model" : "keyword fallback";
+  let wSum = 0, wTot = 0, counted = 0;
+
+  if (model) {
+    setLoading(true, "AI is reading the news…");
+    for (const item of items) {
+      const text = (item.headline || "").slice(0, 200);
+      if (!text) continue;
+      try {
+        const [res] = await model(text);
+        const dir = res.label === "POSITIVE" ? 1 : -1;
+        const w = recencyWeight(item.datetime);
+        wSum += dir * res.score * w;
+        wTot += w;
+        counted++;
+      } catch { /* skip */ }
+    }
+  } else {
+    for (const item of items) {
+      const dir = keywordSentiment(`${item.headline || ""} ${item.summary || ""}`);
+      if (dir === null) continue;
+      const w = recencyWeight(item.datetime);
+      wSum += dir * w; wTot += w; counted++;
     }
   }
-  if (counted > 0) {
-    score = clamp(50 + (net / counted) * 18);
-    if (score > 60) bullish.push(`Positive news tone (${counted} articles)`);
-    else if (score < 40) bearish.push(`Negative news tone (${counted} articles)`);
+
+  if (counted > 0 && wTot > 0) {
+    const avg = wSum / wTot;
+    score = clamp(50 + avg * 40);
+    if (score > 62) bullish.push(`News tone positive — ${counted} articles (${method})`);
+    else if (score < 38) bearish.push(`News tone negative — ${counted} articles (${method})`);
   }
-  return { score: clamp(score), bullish, bearish };
+  // News volume signal
+  if (newsArray.length > 60) bullish.push(`Heavy news flow (${newsArray.length} articles/30d) — high attention`);
+
+  return { score: clamp(score), bullish, bearish, method };
 }
 
 /* ============================================================
@@ -390,46 +568,51 @@ async function analyze(ticker) {
   setLoading(true, "Fetching price history…");
   const { rows, source: priceSource } = await fetchPriceHistory(ticker);
 
-  setLoading(true, "Fetching fundamentals, analyst & news data…");
-  const [profile, quote, metrics, recs, news] = await Promise.allSettled([
+  setLoading(true, "Fetching fundamentals, analyst, earnings & news…");
+  const [profile, quote, metrics, recs, news, earnings] = await Promise.allSettled([
     fetchProfile(ticker), fetchQuote(ticker), fetchMetrics(ticker),
-    fetchRecommendations(ticker), fetchNews(ticker),
+    fetchRecommendations(ticker), fetchNews(ticker), fetchEarnings(ticker),
   ]);
   const val = (r) => (r.status === "fulfilled" ? r.value : null);
-  const profileD = val(profile), quoteD = val(quote), metricsD = val(metrics),
-        recsD = val(recs), newsD = val(news);
+  const profileD = val(profile), quoteD = val(quote), metricsD = val(metrics);
+  const recsD = val(recs), newsD = val(news), earningsD = val(earnings);
+
+  const price = quoteD && quoteD.c ? quoteD.c : rows[rows.length - 1].close;
 
   setLoading(true, "Crunching the numbers…");
   const tech = scoreTechnical(rows);
   const mom = scoreMomentum(rows);
-  const fund = scoreFundamental(metricsD);
+  const fund = scoreFundamental(metricsD, profileD, price, earningsD);
   const analyst = scoreAnalyst(recsD);
-  const sentiment = scoreSentiment(newsD);
+  const sentiment = await scoreSentiment(newsD);
 
   const overall =
     0.25 * tech.score + 0.25 * fund.score + 0.20 * mom.score +
     0.15 * sentiment.score + 0.15 * analyst.score;
 
+  // Confidence: factor agreement + data completeness
   const scores = [tech.score, fund.score, mom.score, sentiment.score, analyst.score];
   const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
   const std = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length);
   let confidence = clamp(100 - std * 1.5);
-
   const sources = [priceSource];
-  if (metricsD) sources.push("Finnhub fundamentals");
-  if (recsD) sources.push("Finnhub analyst");
-  if (newsD) sources.push("Finnhub news");
-  if (sources.length >= 3) confidence = clamp(confidence + 8);
+  if (metricsD?.metric) sources.push("Finnhub fundamentals");
+  if (recsD?.length) sources.push("Finnhub analyst");
+  if (newsD?.length) sources.push(`Finnhub news (${sentiment.method})`);
+  if (Array.isArray(earningsD) && earningsD.length) sources.push("Finnhub earnings");
+  confidence = clamp(confidence * (0.6 + 0.1 * Math.min(sources.length, 4)));
 
+  // Risk: beta + realized volatility + drawdown
   const beta = metricsD?.metric?.beta;
-  let risk = "Medium";
-  if (beta != null) { if (beta > 1.5) risk = "High"; else if (beta < 0.8) risk = "Low"; }
+  let riskPoints = 0;
+  if (beta != null) riskPoints += beta > 1.5 ? 2 : beta > 1.1 ? 1 : beta < 0.8 ? -1 : 0;
+  if (mom.vol != null) riskPoints += mom.vol > 50 ? 2 : mom.vol > 32 ? 1 : mom.vol < 18 ? -1 : 0;
+  if (mom.drawdown > 35) riskPoints += 1;
+  const risk = riskPoints >= 3 ? "High" : riskPoints <= -1 ? "Low" : riskPoints >= 1 ? "Elevated" : "Medium";
 
   let recommendation = "HOLD";
   if (overall >= 70) recommendation = "BUY";
   else if (overall < 45) recommendation = "SELL";
-
-  const price = quoteD && quoteD.c ? quoteD.c : rows[rows.length - 1].close;
 
   return {
     ticker: ticker.toUpperCase(),
@@ -442,7 +625,7 @@ async function analyze(ticker) {
     analystRating: analyst.rating,
     bullish: [...tech.bullish, ...fund.bullish, ...mom.bullish, ...sentiment.bullish, ...analyst.bullish],
     bearish: [...tech.bearish, ...fund.bearish, ...mom.bearish, ...sentiment.bearish, ...analyst.bearish],
-    explanation: `${tech.detail} | ${fund.detail} | 1M move: ${mom.r1m.toFixed(1)}% | Sentiment: ${sentiment.score.toFixed(0)}/100 | Analyst: ${analyst.rating}`,
+    explanation: `${tech.detail} | ${fund.detail} | 1M: ${mom.r1m.toFixed(1)}%, Vol: ${mom.vol ? mom.vol.toFixed(0) + "%" : "N/A"}, MaxDD: -${mom.drawdown.toFixed(0)}% | Sentiment: ${sentiment.score.toFixed(0)}/100 | Analyst: ${analyst.rating}`,
     sources,
   };
 }
@@ -450,17 +633,13 @@ async function analyze(ticker) {
 /* ============================================================
    RENDERING
    ============================================================ */
-function barClass(score) {
-  if (score >= 65) return "high";
-  if (score >= 45) return "mid";
-  return "low";
-}
+function barClass(s) { return s >= 65 ? "high" : s >= 45 ? "mid" : "low"; }
 
 function fillScore(numId, barId, score) {
   document.getElementById(numId).textContent = Math.round(score);
-  const barEl = document.getElementById(barId);
-  barEl.className = "score-fill " + barClass(score);
-  requestAnimationFrame(() => { barEl.style.width = clamp(score) + "%"; });
+  const bar = document.getElementById(barId);
+  bar.className = "score-fill " + barClass(score);
+  requestAnimationFrame(() => { bar.style.width = clamp(score) + "%"; });
 }
 
 function fillList(listId, items, emptyMsg) {
@@ -473,9 +652,9 @@ function fillList(listId, items, emptyMsg) {
     ul.appendChild(li);
     return;
   }
-  for (const item of items) {
+  for (const it of items) {
     const li = document.createElement("li");
-    li.textContent = item;
+    li.textContent = it;
     ul.appendChild(li);
   }
 }
@@ -512,7 +691,7 @@ function render(a) {
 }
 
 /* ============================================================
-   EVENT WIRING
+   EVENTS
    ============================================================ */
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -523,7 +702,6 @@ form.addEventListener("submit", async (e) => {
     showError("Add your free Finnhub API key in script.js (FINNHUB_KEY).");
     return;
   }
-
   try {
     render(await analyze(ticker));
   } catch (err) {
@@ -531,3 +709,15 @@ form.addEventListener("submit", async (e) => {
     showError(err.message || "Analysis failed. Try another ticker.");
   }
 });
+
+/* ---------- Theme toggle (works if you added the button) ---------- */
+const themeBtn = document.getElementById("theme-toggle");
+if (themeBtn) {
+  const saved = localStorage.getItem("theme");
+  if (saved) document.documentElement.dataset.theme = saved;
+  themeBtn.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("theme", next);
+  });
+}
