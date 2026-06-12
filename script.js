@@ -768,3 +768,57 @@ if (themeBtn) {
     localStorage.setItem("theme", next);
   });
 }
+/* ============================================================
+   TICKER AUTOCOMPLETE (Finnhub symbol search)
+   ============================================================ */
+const suggestionsEl = document.getElementById("suggestions");
+let suggestTimer = null;
+let lastQuery = "";
+
+input.addEventListener("input", () => {
+  const q = input.value.trim();
+  clearTimeout(suggestTimer);
+  if (q.length < 2) { hide(suggestionsEl); return; }
+  // Debounce: wait until typing pauses so we don't spam the API
+  suggestTimer = setTimeout(() => fetchSuggestions(q), 300);
+});
+
+async function fetchSuggestions(q) {
+  if (q === lastQuery) return;
+  lastQuery = q;
+  try {
+    const data = await finnhub("/search", { q });
+    const results = (data.result || [])
+      .filter((r) => r.type === "Common Stock" && !r.symbol.includes(".") && !r.symbol.includes(":"))
+      .slice(0, 6);
+    renderSuggestions(results);
+  } catch (e) {
+    console.warn("Suggestion fetch failed:", e.message);
+    hide(suggestionsEl);
+  }
+}
+
+function renderSuggestions(results) {
+  suggestionsEl.innerHTML = "";
+  if (!results.length) { hide(suggestionsEl); return; }
+  for (const r of results) {
+    const div = document.createElement("div");
+    div.className = "suggestion-item";
+    div.innerHTML = `<span class="suggestion-symbol"></span><span class="suggestion-name"></span>`;
+    div.querySelector(".suggestion-symbol").textContent = r.symbol;
+    div.querySelector(".suggestion-name").textContent = r.description;
+    div.addEventListener("click", () => {
+      input.value = r.symbol;
+      hide(suggestionsEl);
+      form.requestSubmit(); // auto-run the analysis on click
+    });
+    suggestionsEl.appendChild(div);
+  }
+  show(suggestionsEl);
+}
+
+// Hide suggestions when clicking elsewhere or submitting
+document.addEventListener("click", (e) => {
+  if (!suggestionsEl.contains(e.target) && e.target !== input) hide(suggestionsEl);
+});
+form.addEventListener("submit", () => hide(suggestionsEl));
