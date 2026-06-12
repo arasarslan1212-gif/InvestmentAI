@@ -560,7 +560,47 @@ async function scoreSentiment(newsArray) {
 
   return { score: clamp(score), bullish, bearish, method };
 }
+/* ============================================================
+   SMART SUMMARY — generates a readable paragraph from the data
+   ============================================================ */
+function buildSummary(a) {
+  const s = [];
+  const name = a.name !== a.ticker ? a.name : a.ticker;
 
+  // Opening verdict
+  if (a.overall >= 75)      s.push(`${name} scores ${Math.round(a.overall)}/100 — one of the stronger profiles this tool can produce.`);
+  else if (a.overall >= 60) s.push(`${name} scores ${Math.round(a.overall)}/100, a moderately positive overall picture.`);
+  else if (a.overall >= 45) s.push(`${name} scores ${Math.round(a.overall)}/100 — a mixed picture without a clear edge either way.`);
+  else                      s.push(`${name} scores ${Math.round(a.overall)}/100, with warning signs outweighing the positives right now.`);
+
+  // Strongest and weakest factor
+  const factors = Object.entries(a.scores); // [name, score]
+  factors.sort((x, y) => y[1] - x[1]);
+  const [bestName, bestVal] = factors[0];
+  const [worstName, worstVal] = factors[factors.length - 1];
+  const label = { technical: "technical setup", fundamental: "fundamentals", momentum: "momentum", sentiment: "news sentiment", analyst: "analyst opinion" };
+
+  if (bestVal - worstVal > 25) {
+    s.push(`The standout strength is its ${label[bestName]} (${Math.round(bestVal)}), while the weak spot is ${label[worstName]} (${Math.round(worstVal)}) — that disagreement is why confidence sits at ${Math.round(a.confidence)}%.`);
+  } else {
+    s.push(`The five factors broadly agree, led by ${label[bestName]} at ${Math.round(bestVal)}.`);
+  }
+
+  // Headline factor highlights (top bullish + top bearish)
+  if (a.bullish.length) s.push(`On the plus side: ${a.bullish[0].toLowerCase()}${a.bullish[1] ? ", and " + a.bullish[1].toLowerCase() : ""}.`);
+  if (a.bearish.length) s.push(`On the caution side: ${a.bearish[0].toLowerCase()}${a.bearish[1] ? ", and " + a.bearish[1].toLowerCase() : ""}.`);
+
+  // Risk framing
+  if (a.risk === "High" || a.risk === "Elevated")
+    s.push(`Risk is rated ${a.risk.toLowerCase()}, so swings in both directions should be expected.`);
+  else if (a.risk === "Low")
+    s.push(`Risk is rated low, suggesting comparatively calm price behavior.`);
+
+  // Honest closer
+  s.push(`As always, a score is a snapshot — check what's driving the numbers before acting on them.`);
+
+  return s.join(" ");
+}
 /* ============================================================
    ORCHESTRATION
    ============================================================ */
