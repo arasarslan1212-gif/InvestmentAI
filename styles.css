@@ -542,3 +542,34 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* ---------- PRICE CHART ---------- */
+.chart-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 18px;
+  margin-top: 14px;
+  transition: background-color 0.3s, border-color 0.3s;
+}
+
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chart-title { font-size: 0.93rem; font-weight: 700; }
+
+.chart-legend { display: flex; gap: 14px; font-size: 0.76rem; color: var(--text-muted); }
+
+.legend-item { display: flex; align-items: center; gap: 5px; }
+
+.legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot-price { background: var(--accent); }
+.dot-ma20  { background: var(--amber); }
+.dot-ma50  { background: var(--red); }
+
+#price-chart { width: 100%; display: block; }
