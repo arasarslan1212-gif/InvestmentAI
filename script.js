@@ -560,6 +560,7 @@ async function scoreSentiment(newsArray) {
 
   return { score: clamp(score), bullish, bearish, method };
 }
+
 /* ============================================================
    SMART SUMMARY — generates a readable paragraph from the data
    ============================================================ */
@@ -601,6 +602,7 @@ function buildSummary(a) {
 
   return s.join(" ");
 }
+
 /* ============================================================
    ORCHESTRATION
    ============================================================ */
@@ -724,6 +726,11 @@ function render(a) {
   fillList("bearish-list", a.bearish, "No notable bearish signals.");
 
   document.getElementById("explanation-text").textContent = a.explanation;
+
+  // Smart summary (the fix!)
+  const summaryEl = document.getElementById("summary-text");
+  if (summaryEl) summaryEl.textContent = buildSummary(a);
+
   document.getElementById("sources-value").textContent = a.sources.join(", ");
 
   setLoading(false);
