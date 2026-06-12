@@ -657,6 +657,7 @@ async function analyze(ticker) {
   else if (overall < 45) recommendation = "SELL";
 
   return {
+    rows,
     ticker: ticker.toUpperCase(),
     name: profileD?.name || ticker.toUpperCase(),
     price, overall, confidence, risk, recommendation,
@@ -722,9 +723,9 @@ function render(a) {
   fillScore("sentiment-num", "sentiment-bar", a.scores.sentiment);
   fillScore("analyst-num", "analyst-bar", a.scores.analyst);
 
+drawChart(a.rows);
   fillList("bullish-list", a.bullish, "No notable bullish signals.");
   fillList("bearish-list", a.bearish, "No notable bearish signals.");
-
   document.getElementById("explanation-text").textContent = a.explanation;
 
   // Smart summary (the fix!)
@@ -822,3 +823,110 @@ document.addEventListener("click", (e) => {
   if (!suggestionsEl.contains(e.target) && e.target !== input) hide(suggestionsEl);
 });
 form.addEventListener("submit", () => hide(suggestionsEl));
+/* ============================================================
+   PRICE CHART (canvas, 1 year, with MA20 / MA50)
+   ============================================================ */
+function smaArray(values, period) {
+  const out = new Array(values.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function drawChart(rows) {
+  const canvas = document.getElementById("price-chart");
+  if (!canvas || !rows || rows.length < 30) return;
+
+  // Last ~1 year of data
+  const data = rows.slice(-252);
+  const closes = data.map((r) => r.close);
+  const ma20 = smaArray(closes, 20);
+  const ma50 = smaArray(closes, 50);
+
+  // Sharp rendering on retina screens
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || canvas.parentElement.clientWidth;
+  const cssHeight = 220;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const pad = { top: 10, right: 8, bottom: 22, left: 46 };
+  const W = cssWidth - pad.left - pad.right;
+  const H = cssHeight - pad.top - pad.bottom;
+
+  const min = Math.min(...closes) * 0.98;
+  const max = Math.max(...closes) * 1.02;
+  const x = (i) => pad.left + (i / (closes.length - 1)) * W;
+  const y = (v) => pad.top + (1 - (v - min) / (max - min)) * H;
+
+  const textColor = cssVar("--text-muted") || "#888";
+  const gridColor = cssVar("--border") || "#ddd";
+  const priceColor = cssVar("--accent") || "#10b981";
+  const ma20Color = cssVar("--amber") || "#d97706";
+  const ma50Color = cssVar("--red") || "#dc2626";
+
+  // Grid lines + price labels (4 levels)
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillStyle = textColor;
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) {
+    const v = min + ((max - min) * g) / 3;
+    const gy = y(v);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, gy);
+    ctx.lineTo(pad.left + W, gy);
+    ctx.stroke();
+    ctx.fillText("$" + v.toFixed(v > 100 ? 0 : 2), 4, gy + 3);
+  }
+
+  // Date labels: start, middle, end
+  const dateLabel = (i) => data[i].date.slice(5); // MM-DD
+  ctx.fillText(dateLabel(0), pad.left, cssHeight - 6);
+  ctx.fillText(dateLabel(Math.floor(data.length / 2)), pad.left + W / 2 - 14, cssHeight - 6);
+  ctx.fillText(dateLabel(data.length - 1), pad.left + W - 32, cssHeight - 6);
+
+  // Helper to draw a line series
+  function drawLine(series, color, width) {
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < series.length; i++) {
+      if (series[i] == null) continue;
+      const px = x(i), py = y(series[i]);
+      if (!started) { ctx.moveTo(px, py); started = true; }
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+
+  // Soft fill under the price line
+  ctx.beginPath();
+  ctx.moveTo(x(0), y(closes[0]));
+  for (let i = 1; i < closes.length; i++) ctx.lineTo(x(i), y(closes[i]));
+  ctx.lineTo(x(closes.length - 1), pad.top + H);
+  ctx.lineTo(x(0), pad.top + H);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + H);
+  grad.addColorStop(0, priceColor + "33"); // ~20% opacity
+  grad.addColorStop(1, priceColor + "00");
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // The three lines
+  drawLine(ma50, ma50Color, 1.3);
+  drawLine(ma20, ma20Color, 1.3);
+  drawLine(closes, priceColor, 2);
+}
