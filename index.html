@@ -9,13 +9,16 @@
 <body>
   <div class="app">
 
+    <!-- Theme toggle -->
+    <button id="theme-toggle" class="theme-toggle" title="Toggle light/dark">🌓</button>
+
     <!-- ===== HEADER ===== -->
     <header class="header">
       <h1 class="logo">📈 Stock Analyzer</h1>
       <p class="tagline">Multi-factor analysis: technical, fundamental, momentum, sentiment &amp; analyst signals</p>
     </header>
 
-    <!-- ===== SEARCH BAR ===== -->
+    <!-- ===== SEARCH ===== -->
     <section class="search-section">
       <form id="search-form" class="search-form">
         <input
@@ -27,18 +30,18 @@
           maxlength="10"
         />
         <button type="submit" id="analyze-btn" class="analyze-btn">Analyze</button>
-</form>
+      </form>
       <div id="suggestions" class="suggestions hidden"></div>
       <p class="hint">Tip: try AAPL, MSFT, GOOGL, TSLA, or NVDA</p>
     </section>
 
-    <!-- ===== LOADING STATE ===== -->
+    <!-- ===== LOADING ===== -->
     <section id="loading" class="loading hidden">
       <div class="spinner"></div>
       <p id="loading-text">Fetching data and crunching the numbers…</p>
     </section>
 
-    <!-- ===== ERROR STATE ===== -->
+    <!-- ===== ERROR ===== -->
     <section id="error" class="error hidden">
       <p id="error-text">Something went wrong.</p>
     </section>
@@ -46,14 +49,13 @@
     <!-- ===== RESULTS ===== -->
     <section id="results" class="results hidden">
 
-      <!-- Top summary card -->
+      <!-- Summary card -->
       <div class="summary-card">
         <div class="summary-left">
           <h2 id="result-ticker" class="result-ticker">AAPL</h2>
           <p id="result-name" class="result-name">Apple Inc.</p>
           <span id="result-updated" class="result-updated">Updated: —</span>
         </div>
-
         <div class="summary-right">
           <div class="overall-score">
             <span class="overall-label">Overall Score</span>
@@ -63,7 +65,8 @@
           <div id="recommendation-badge" class="recommendation-badge">HOLD</div>
         </div>
       </div>
-<!-- Price chart -->
+
+      <!-- Price chart -->
       <div class="chart-card">
         <div class="chart-head">
           <h3 class="chart-title">1-Year Price</h3>
@@ -75,6 +78,7 @@
         </div>
         <canvas id="price-chart" height="220"></canvas>
       </div>
+
       <!-- Key stats row -->
       <div class="stats-row">
         <div class="stat-box">
@@ -90,55 +94,67 @@
           <span id="price-value" class="stat-value">—</span>
         </div>
         <div class="stat-box">
-          <span class="stat-label">Price Target</span>
+          <span class="stat-label">Analyst View</span>
           <span id="target-value" class="stat-value">—</span>
         </div>
+      </div>
+
+      <!-- 52-week range bar -->
+      <div class="range-card">
+        <div class="range-head">
+          <span class="range-label">52-Week Range</span>
+          <span id="range-pct" class="range-pct">—</span>
+        </div>
+        <div class="range-track">
+          <div id="range-fill" class="range-fill"></div>
+          <div id="range-marker" class="range-marker"></div>
+        </div>
+        <div class="range-ends">
+          <span id="range-low">—</span>
+          <span id="range-high">—</span>
+        </div>
+      </div>
+
+      <!-- Key metrics strip -->
+      <div class="metrics-row">
+        <div class="metric-box"><span class="metric-label">P/E</span><span id="m-pe" class="metric-value">—</span></div>
+        <div class="metric-box"><span class="metric-label">Market Cap</span><span id="m-mcap" class="metric-value">—</span></div>
+        <div class="metric-box"><span class="metric-label">Beta</span><span id="m-beta" class="metric-value">—</span></div>
+        <div class="metric-box"><span class="metric-label">Div Yield</span><span id="m-div" class="metric-value">—</span></div>
+        <div class="metric-box"><span class="metric-label">Sector</span><span id="m-sector" class="metric-value">—</span></div>
       </div>
 
       <!-- Sub-scores -->
       <div class="scores-grid">
         <div class="score-card">
-          <div class="score-card-head">
-            <span class="score-name">Technical</span>
-            <span id="technical-num" class="score-num">0</span>
-          </div>
+          <div class="score-card-head"><span class="score-name">Technical</span><span id="technical-num" class="score-num">0</span></div>
           <div class="score-bar"><div id="technical-bar" class="score-fill"></div></div>
         </div>
-
         <div class="score-card">
-          <div class="score-card-head">
-            <span class="score-name">Fundamental</span>
-            <span id="fundamental-num" class="score-num">0</span>
-          </div>
+          <div class="score-card-head"><span class="score-name">Fundamental</span><span id="fundamental-num" class="score-num">0</span></div>
           <div class="score-bar"><div id="fundamental-bar" class="score-fill"></div></div>
         </div>
-
         <div class="score-card">
-          <div class="score-card-head">
-            <span class="score-name">Momentum</span>
-            <span id="momentum-num" class="score-num">0</span>
-          </div>
+          <div class="score-card-head"><span class="score-name">Momentum</span><span id="momentum-num" class="score-num">0</span></div>
           <div class="score-bar"><div id="momentum-bar" class="score-fill"></div></div>
         </div>
-
         <div class="score-card">
-          <div class="score-card-head">
-            <span class="score-name">Sentiment</span>
-            <span id="sentiment-num" class="score-num">0</span>
-          </div>
+          <div class="score-card-head"><span class="score-name">Sentiment</span><span id="sentiment-num" class="score-num">0</span></div>
           <div class="score-bar"><div id="sentiment-bar" class="score-fill"></div></div>
         </div>
-
         <div class="score-card">
-          <div class="score-card-head">
-            <span class="score-name">Analyst</span>
-            <span id="analyst-num" class="score-num">0</span>
-          </div>
+          <div class="score-card-head"><span class="score-name">Analyst</span><span id="analyst-num" class="score-num">0</span></div>
           <div class="score-bar"><div id="analyst-bar" class="score-fill"></div></div>
         </div>
       </div>
 
-      <!-- Factors: bullish vs bearish -->
+      <!-- Summary -->
+      <div class="explanation-card">
+        <h3 class="explanation-title">💡 Summary</h3>
+        <p id="summary-text" class="summary-text">—</p>
+      </div>
+
+      <!-- Factors -->
       <div class="factors-grid">
         <div class="factors-card bullish">
           <h3 class="factors-title">🟢 Bullish Factors</h3>
@@ -149,18 +165,14 @@
           <ul id="bearish-list" class="factors-list"></ul>
         </div>
       </div>
-<!-- Summary -->
-<div class="explanation-card">
-  <h3 class="explanation-title">💡 Summary</h3>
-  <p id="summary-text" style="font-family: inherit; font-size: 0.92rem; color: var(--text); line-height: 1.7;">—</p>
-</div>
-      <!-- Explanation -->
+
+      <!-- Analysis details -->
       <div class="explanation-card">
         <h3 class="explanation-title">Analysis Details</h3>
         <p id="explanation-text" class="explanation-text">—</p>
       </div>
 
-      <!-- Data sources -->
+      <!-- Sources -->
       <div class="sources-line">
         <span class="sources-label">Data sources:</span>
         <span id="sources-value">—</span>
