@@ -1,11 +1,12 @@
 /* ============================================================
-   Stock Analyzer — script.js  (DEEP ANALYSIS VERSION)
+   Stock Analyzer — script.js  (CLEAN POLISHED VERSION)
    Price history: Stooq → Yahoo fallback (via CORS proxy)
    Data: Finnhub (profile, quote, metrics, analyst, news, earnings)
    AI sentiment: transformers.js in-browser (keyword fallback)
+   Features: autocomplete, price chart, 52-week range, metrics
    ============================================================ */
 
-// ⬇️ PASTE YOUR FREE FINNHUB KEY HERE
+// ⬇️ YOUR FREE FINNHUB KEY
 const FINNHUB_KEY = "d8kpsp1r01qut1f6usrgd8kpsp1r01qut1f6uss0";
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
@@ -20,9 +21,10 @@ const loadingText = document.getElementById("loading-text");
 const errorEl = document.getElementById("error");
 const errorText = document.getElementById("error-text");
 const resultsEl = document.getElementById("results");
+const suggestionsEl = document.getElementById("suggestions");
 
-function show(el) { el.classList.remove("hidden"); }
-function hide(el) { el.classList.add("hidden"); }
+function show(el) { if (el) el.classList.remove("hidden"); }
+function hide(el) { if (el) el.classList.add("hidden"); }
 
 function setLoading(on, msg) {
   if (on) {
@@ -173,7 +175,6 @@ function macdSeries(closes) {
   const line = closes.map((_, i) => (fast[i] != null && slow[i] != null ? fast[i] - slow[i] : null));
   const valid = line.filter((v) => v != null);
   const sig = emaSeries(valid, 9);
-  // align signal back to full length
   const pad = line.length - valid.length;
   const signal = new Array(pad).fill(null).concat(sig);
   return { line, signal };
@@ -188,7 +189,7 @@ function bollinger(closes, period = 20) {
   const price = closes[closes.length - 1];
   return {
     pos: upper === lower ? 0.5 : (price - lower) / (upper - lower),
-    width: mean ? ((upper - lower) / mean) * 100 : 0, // squeeze detection
+    width: mean ? ((upper - lower) / mean) * 100 : 0,
   };
 }
 
@@ -222,16 +223,14 @@ function maxDrawdown(closes, lookback = 252) {
 }
 
 /* ============================================================
-   SCORING — TECHNICAL (deep)
+   SCORING — TECHNICAL
    ============================================================ */
 function scoreTechnical(rows) {
   const closes = rows.map((r) => r.close);
-  const volumes = rows.map((r) => r.volume);
   const price = closes[closes.length - 1];
   let score = 50;
   const bullish = [], bearish = [];
 
-  // RSI level + direction
   const rsiS = rsiSeries(closes);
   const rsi = rsiS[rsiS.length - 1] ?? 50;
   const rsiPrev = rsiS[rsiS.length - 6] ?? rsi;
@@ -240,7 +239,6 @@ function scoreTechnical(rows) {
   if (rsi > rsiPrev + 5 && rsi < 60) { score += 4; bullish.push("RSI recovering upward"); }
   else if (rsi < rsiPrev - 5 && rsi > 40) { score -= 4; bearish.push("RSI rolling over"); }
 
-  // MACD: position + histogram momentum
   const { line, signal } = macdSeries(closes);
   const macd = line[line.length - 1] ?? 0;
   const sig = signal[signal.length - 1] ?? 0;
@@ -251,55 +249,45 @@ function scoreTechnical(rows) {
   else if (hist < 0 && hist < histPrev) { score -= 10; bearish.push("MACD bearish and weakening"); }
   else { score -= 6; bearish.push("MACD below signal"); }
 
-  // Trend STRUCTURE + STRENGTH (MA slopes)
   const ma20 = sma(closes, 20), ma50 = sma(closes, 50), ma200 = sma(closes, 200);
-  const ma20Prev = sma(closes, 20, 10), ma50Prev = sma(closes, 50, 10);
+  const ma20Prev = sma(closes, 20, 10);
   if (ma20 && ma50) {
     const slope20 = ma20Prev ? ((ma20 - ma20Prev) / ma20Prev) * 100 : 0;
-    const slope50 = ma50Prev ? ((ma50 - ma50Prev) / ma50Prev) * 100 : 0;
-    if (price > ma20 && ma20 > ma50 && slope20 > 0.5) {
-      score += 14; bullish.push(`Strong uptrend (MA20 slope +${slope20.toFixed(1)}%/2wk)`);
-    } else if (price > ma20 && ma20 > ma50) {
-      score += 8; bullish.push("Uptrend structure intact");
-    } else if (price < ma20 && ma20 < ma50 && slope20 < -0.5) {
-      score -= 14; bearish.push(`Strong downtrend (MA20 slope ${slope20.toFixed(1)}%/2wk)`);
-    } else if (price < ma20 && ma20 < ma50) {
-      score -= 8; bearish.push("Downtrend structure");
-    }
-    // Golden / death cross within last ~15 sessions
+    if (price > ma20 && ma20 > ma50 && slope20 > 0.5) { score += 14; bullish.push(`Strong uptrend (MA20 +${slope20.toFixed(1)}%/2wk)`); }
+    else if (price > ma20 && ma20 > ma50) { score += 8; bullish.push("Uptrend structure intact"); }
+    else if (price < ma20 && ma20 < ma50 && slope20 < -0.5) { score -= 14; bearish.push(`Strong downtrend (MA20 ${slope20.toFixed(1)}%/2wk)`); }
+    else if (price < ma20 && ma20 < ma50) { score -= 8; bearish.push("Downtrend structure"); }
+
     const ma50_15 = sma(closes, 50, 15), ma200_15 = sma(closes, 200, 15);
     if (ma200 && ma200_15 && ma50_15) {
       if (ma50 > ma200 && ma50_15 <= ma200_15) { score += 8; bullish.push("Recent golden cross (MA50 > MA200)"); }
       if (ma50 < ma200 && ma50_15 >= ma200_15) { score -= 8; bearish.push("Recent death cross (MA50 < MA200)"); }
     }
-    if (ma200 && price > ma200) { score += 4; bullish.push("Above 200-day MA (long-term uptrend)"); }
+    if (ma200 && price > ma200) { score += 4; bullish.push("Above 200-day MA"); }
     else if (ma200 && price < ma200) { score -= 4; bearish.push("Below 200-day MA"); }
   }
 
-  // Bollinger position + squeeze
   const bb = bollinger(closes);
   if (bb) {
     if (bb.pos < 0.08) { score += 8; bullish.push("At lower Bollinger Band"); }
     else if (bb.pos > 0.92) { score -= 8; bearish.push("At upper Bollinger Band"); }
-    if (bb.width < 6) bullish.push(`Bollinger squeeze (width ${bb.width.toFixed(1)}%) — big move may be coming`);
+    if (bb.width < 6) bullish.push(`Bollinger squeeze (${bb.width.toFixed(1)}%) — big move may be coming`);
   }
 
-  // Stochastic confirmation
   const stoch = stochastic(rows);
   if (stoch != null) {
     if (stoch < 20 && rsi < 40) { score += 5; bullish.push("Stochastic confirms oversold"); }
     else if (stoch > 80 && rsi > 60) { score -= 5; bearish.push("Stochastic confirms overbought"); }
   }
 
-  // Volume trend on up vs down days (accumulation/distribution feel)
   if (rows.length >= 20) {
     let upVol = 0, downVol = 0;
     for (let i = rows.length - 20; i < rows.length; i++) {
       if (rows[i].close >= rows[i].open) upVol += rows[i].volume;
       else downVol += rows[i].volume;
     }
-    if (upVol > downVol * 1.4) { score += 6; bullish.push("Volume concentrated on up days (accumulation)"); }
-    else if (downVol > upVol * 1.4) { score -= 6; bearish.push("Volume concentrated on down days (distribution)"); }
+    if (upVol > downVol * 1.4) { score += 6; bullish.push("Accumulation (volume on up days)"); }
+    else if (downVol > upVol * 1.4) { score -= 6; bearish.push("Distribution (volume on down days)"); }
   }
 
   return {
@@ -309,22 +297,19 @@ function scoreTechnical(rows) {
 }
 
 /* ============================================================
-   SCORING — MOMENTUM & RISK (deep)
+   SCORING — MOMENTUM & RISK
    ============================================================ */
 function scoreMomentum(rows) {
   const c = rows.map((r) => r.close);
   const n = c.length;
   const ret = (d) => (n > d ? (c[n - 1] / c[n - 1 - d] - 1) * 100 : null);
-  const r1w = ret(5), r1m = ret(21), r3m = ret(63), r6m = ret(126);
+  const r1w = ret(5), r1m = ret(21), r3m = ret(63);
   let score = 50;
   const bullish = [], bearish = [];
 
-  // Multi-timeframe alignment matters more than any single number
   const frames = [r1w, r1m, r3m].filter((v) => v != null);
-  const allUp = frames.length >= 3 && frames.every((v) => v > 0);
-  const allDown = frames.length >= 3 && frames.every((v) => v < 0);
-  if (allUp) { score += 10; bullish.push("Positive momentum across all timeframes"); }
-  if (allDown) { score -= 10; bearish.push("Negative momentum across all timeframes"); }
+  if (frames.length >= 3 && frames.every((v) => v > 0)) { score += 10; bullish.push("Positive momentum across all timeframes"); }
+  if (frames.length >= 3 && frames.every((v) => v < 0)) { score -= 10; bearish.push("Negative momentum across all timeframes"); }
 
   if (r1m != null) {
     if (r1m > 10) { score += 10; bullish.push(`Strong month (+${r1m.toFixed(1)}%)`); }
@@ -334,24 +319,23 @@ function scoreMomentum(rows) {
     if (r3m > 20) { score += 8; bullish.push(`Strong quarter (+${r3m.toFixed(1)}%)`); }
     else if (r3m < -20) { score -= 8; bearish.push(`Weak quarter (${r3m.toFixed(1)}%)`); }
   }
-  // Mean reversion sanity: parabolic short-term spikes get a caution
   if (r1w != null && r1w > 15) { score -= 4; bearish.push(`Parabolic week (+${r1w.toFixed(1)}%) — pullback risk`); }
 
   const vol = annualizedVol(c);
   if (vol != null) {
-    if (vol > 55) { score -= 6; bearish.push(`High volatility (${vol.toFixed(0)}% annualized)`); }
+    if (vol > 55) { score -= 6; bearish.push(`High volatility (${vol.toFixed(0)}%)`); }
     else if (vol < 18) { score += 3; bullish.push(`Low volatility (${vol.toFixed(0)}%)`); }
   }
 
   const dd = maxDrawdown(c);
-  if (dd > 35) { score -= 5; bearish.push(`Deep 1-yr drawdown (-${dd.toFixed(0)}% from peak)`); }
+  if (dd > 35) { score -= 5; bearish.push(`Deep 1-yr drawdown (-${dd.toFixed(0)}%)`); }
   else if (dd < 12) { score += 4; bullish.push(`Shallow drawdowns (max -${dd.toFixed(0)}%)`); }
 
   return { score: clamp(score), bullish, bearish, r1m: r1m ?? 0, vol, drawdown: dd };
 }
 
 /* ============================================================
-   SCORING — FUNDAMENTAL (sector-aware, deep)
+   SCORING — FUNDAMENTAL
    ============================================================ */
 function peThresholds(industry) {
   const ind = (industry || "").toLowerCase();
@@ -378,7 +362,6 @@ function scoreFundamental(metricData, profileD, price, earningsD) {
   const divYield = m.currentDividendYieldTTM;
   const wkHigh = m["52WeekHigh"], wkLow = m["52WeekLow"];
 
-  // Sector-aware valuation
   const th = peThresholds(industry);
   if (pe != null) {
     if (pe > 0 && pe < th.cheap) { score += 12; bullish.push(`P/E ${pe.toFixed(1)} reasonable for ${industry || "sector"}`); }
@@ -386,66 +369,60 @@ function scoreFundamental(metricData, profileD, price, earningsD) {
     else if (pe < 0) { score -= 8; bearish.push("Negative earnings (no meaningful P/E)"); }
   }
 
-  // Growth-adjusted valuation (homemade PEG)
   if (pe != null && pe > 0 && epsGrowth != null && epsGrowth > 0) {
     const peg = pe / epsGrowth;
     if (peg < 1.2) { score += 8; bullish.push(`Cheap vs growth (PEG ≈ ${peg.toFixed(2)})`); }
     else if (peg > 3) { score -= 6; bearish.push(`Expensive vs growth (PEG ≈ ${peg.toFixed(2)})`); }
   }
 
-  // Quality
   if (roe != null) {
     if (roe > 20) { score += 10; bullish.push(`Excellent ROE (${roe.toFixed(1)}%)`); }
     else if (roe > 12) { score += 6; bullish.push(`Solid ROE (${roe.toFixed(1)}%)`); }
     else if (roe < 5) { score -= 7; bearish.push(`Weak ROE (${roe.toFixed(1)}%)`); }
   }
-  if (grossMargin != null && grossMargin > 50) { score += 4; bullish.push(`Strong gross margin (${grossMargin.toFixed(0)}%) — pricing power`); }
+  if (grossMargin != null && grossMargin > 50) { score += 4; bullish.push(`Strong gross margin (${grossMargin.toFixed(0)}%)`); }
   if (netMargin != null) {
     if (netMargin > 20) { score += 5; bullish.push(`High net margin (${netMargin.toFixed(1)}%)`); }
     else if (netMargin < 0) { score -= 8; bearish.push("Currently unprofitable"); }
   }
 
-  // Balance sheet
   if (debtEq != null) {
-    if (debtEq < 0.4) { score += 6; bullish.push("Conservative balance sheet (low debt)"); }
-    else if (debtEq > 2) { score -= 12; bearish.push(`Heavy debt load (D/E ${debtEq.toFixed(2)})`); }
+    if (debtEq < 0.4) { score += 6; bullish.push("Conservative balance sheet"); }
+    else if (debtEq > 2) { score -= 12; bearish.push(`Heavy debt (D/E ${debtEq.toFixed(2)})`); }
     else if (debtEq > 1.2) { score -= 6; bearish.push(`Elevated debt (D/E ${debtEq.toFixed(2)})`); }
   }
 
-  // Growth
   if (revGrowth != null) {
     if (revGrowth > 15) { score += 10; bullish.push(`Strong revenue growth (${revGrowth.toFixed(1)}%)`); }
     else if (revGrowth < -5) { score -= 10; bearish.push(`Shrinking revenue (${revGrowth.toFixed(1)}%)`); }
   }
 
-  // Earnings surprise track record (last 4 quarters)
   if (Array.isArray(earningsD) && earningsD.length > 0) {
     const last4 = earningsD.slice(0, 4);
     const beats = last4.filter((e) => e.surprise != null && e.surprise > 0).length;
     const misses = last4.filter((e) => e.surprise != null && e.surprise < 0).length;
-    if (beats >= 3) { score += 8; bullish.push(`Beat earnings estimates ${beats} of last ${last4.length} quarters`); }
-    else if (misses >= 2) { score -= 8; bearish.push(`Missed estimates ${misses} of last ${last4.length} quarters`); }
+    if (beats >= 3) { score += 8; bullish.push(`Beat estimates ${beats}/${last4.length} quarters`); }
+    else if (misses >= 2) { score -= 8; bearish.push(`Missed estimates ${misses}/${last4.length} quarters`); }
   }
 
-  // Dividend
   if (divYield != null && divYield > 2 && divYield < 6) { score += 3; bullish.push(`Pays dividend (${divYield.toFixed(1)}%)`); }
 
-  // 52-week range position
   let rangePos = null;
   if (wkHigh && wkLow && wkHigh > wkLow && price) {
     rangePos = (price - wkLow) / (wkHigh - wkLow);
-    if (rangePos > 0.85) { score += 4; bullish.push(`Near 52-week high (${(rangePos * 100).toFixed(0)}% of range)`); }
-    else if (rangePos < 0.2) { score -= 4; bearish.push(`Near 52-week low (${(rangePos * 100).toFixed(0)}% of range) — investigate why`); }
+    if (rangePos > 0.85) { score += 4; bullish.push(`Near 52-week high (${(rangePos * 100).toFixed(0)}%)`); }
+    else if (rangePos < 0.2) { score -= 4; bearish.push(`Near 52-week low (${(rangePos * 100).toFixed(0)}%) — investigate`); }
   }
 
   return {
     score: clamp(score), bullish, bearish,
-    detail: `P/E=${pe != null ? pe.toFixed(1) : "N/A"} (${industry || "?"}), ROE=${roe != null ? roe.toFixed(1) + "%" : "N/A"}, RevG=${revGrowth != null ? revGrowth.toFixed(1) + "%" : "N/A"}, 52wk=${rangePos != null ? (rangePos * 100).toFixed(0) + "%" : "N/A"}`,
+    detail: `P/E=${pe != null ? pe.toFixed(1) : "N/A"} (${industry || "?"}), ROE=${roe != null ? roe.toFixed(1) + "%" : "N/A"}, RevG=${revGrowth != null ? revGrowth.toFixed(1) + "%" : "N/A"}`,
+    metrics: { pe, beta: m.beta, divYield, wkHigh, wkLow, marketCap: profileD?.marketCapitalization, sector: industry },
   };
 }
 
 /* ============================================================
-   SCORING — ANALYST (with trend over months)
+   SCORING — ANALYST
    ============================================================ */
 function scoreAnalyst(recArray) {
   let score = 50;
@@ -466,12 +443,11 @@ function scoreAnalyst(recArray) {
       const bear = (recArray[0].sell || 0) + (recArray[0].strongSell || 0);
       if (bull > bear) bullish.push(`Analysts lean bullish (${bull} buy vs ${bear} sell)`);
       else if (bear > bull) bearish.push(`Analysts lean bearish (${bear} sell vs ${bull} buy)`);
-      // Trend: compare with ~3 months ago
       if (recArray.length >= 4) {
         const past = weightedOf(recArray[3]);
         if (past != null) {
-          if (now > past + 5) { score = clamp(score + 5); bullish.push("Analyst sentiment improving over 3 months"); }
-          else if (now < past - 5) { score = clamp(score - 5); bearish.push("Analyst sentiment deteriorating over 3 months"); }
+          if (now > past + 5) { score = clamp(score + 5); bullish.push("Analyst sentiment improving"); }
+          else if (now < past - 5) { score = clamp(score - 5); bearish.push("Analyst sentiment deteriorating"); }
         }
       }
     }
@@ -480,7 +456,7 @@ function scoreAnalyst(recArray) {
 }
 
 /* ============================================================
-   SCORING — AI SENTIMENT (transformers.js, keyword fallback)
+   SCORING — AI SENTIMENT
    ============================================================ */
 let sentimentPipeline = null;
 let sentimentLoadFailed = false;
@@ -535,9 +511,7 @@ async function scoreSentiment(newsArray) {
         const [res] = await model(text);
         const dir = res.label === "POSITIVE" ? 1 : -1;
         const w = recencyWeight(item.datetime);
-        wSum += dir * res.score * w;
-        wTot += w;
-        counted++;
+        wSum += dir * res.score * w; wTot += w; counted++;
       } catch { /* skip */ }
     }
   } else {
@@ -555,51 +529,41 @@ async function scoreSentiment(newsArray) {
     if (score > 62) bullish.push(`News tone positive — ${counted} articles (${method})`);
     else if (score < 38) bearish.push(`News tone negative — ${counted} articles (${method})`);
   }
-  // News volume signal
-  if (newsArray.length > 60) bullish.push(`Heavy news flow (${newsArray.length} articles/30d) — high attention`);
+  if (newsArray.length > 60) bullish.push(`Heavy news flow (${newsArray.length}/30d)`);
 
   return { score: clamp(score), bullish, bearish, method };
 }
 
 /* ============================================================
-   SMART SUMMARY — generates a readable paragraph from the data
+   SMART SUMMARY
    ============================================================ */
 function buildSummary(a) {
   const s = [];
   const name = a.name !== a.ticker ? a.name : a.ticker;
 
-  // Opening verdict
   if (a.overall >= 75)      s.push(`${name} scores ${Math.round(a.overall)}/100 — one of the stronger profiles this tool can produce.`);
   else if (a.overall >= 60) s.push(`${name} scores ${Math.round(a.overall)}/100, a moderately positive overall picture.`);
   else if (a.overall >= 45) s.push(`${name} scores ${Math.round(a.overall)}/100 — a mixed picture without a clear edge either way.`);
   else                      s.push(`${name} scores ${Math.round(a.overall)}/100, with warning signs outweighing the positives right now.`);
 
-  // Strongest and weakest factor
-  const factors = Object.entries(a.scores); // [name, score]
+  const factors = Object.entries(a.scores);
   factors.sort((x, y) => y[1] - x[1]);
   const [bestName, bestVal] = factors[0];
   const [worstName, worstVal] = factors[factors.length - 1];
   const label = { technical: "technical setup", fundamental: "fundamentals", momentum: "momentum", sentiment: "news sentiment", analyst: "analyst opinion" };
 
-  if (bestVal - worstVal > 25) {
+  if (bestVal - worstVal > 25)
     s.push(`The standout strength is its ${label[bestName]} (${Math.round(bestVal)}), while the weak spot is ${label[worstName]} (${Math.round(worstVal)}) — that disagreement is why confidence sits at ${Math.round(a.confidence)}%.`);
-  } else {
+  else
     s.push(`The five factors broadly agree, led by ${label[bestName]} at ${Math.round(bestVal)}.`);
-  }
 
-  // Headline factor highlights (top bullish + top bearish)
   if (a.bullish.length) s.push(`On the plus side: ${a.bullish[0].toLowerCase()}${a.bullish[1] ? ", and " + a.bullish[1].toLowerCase() : ""}.`);
   if (a.bearish.length) s.push(`On the caution side: ${a.bearish[0].toLowerCase()}${a.bearish[1] ? ", and " + a.bearish[1].toLowerCase() : ""}.`);
 
-  // Risk framing
-  if (a.risk === "High" || a.risk === "Elevated")
-    s.push(`Risk is rated ${a.risk.toLowerCase()}, so swings in both directions should be expected.`);
-  else if (a.risk === "Low")
-    s.push(`Risk is rated low, suggesting comparatively calm price behavior.`);
+  if (a.risk === "High" || a.risk === "Elevated") s.push(`Risk is rated ${a.risk.toLowerCase()}, so swings in both directions should be expected.`);
+  else if (a.risk === "Low") s.push(`Risk is rated low, suggesting comparatively calm price behavior.`);
 
-  // Honest closer
   s.push(`As always, a score is a snapshot — check what's driving the numbers before acting on them.`);
-
   return s.join(" ");
 }
 
@@ -632,7 +596,6 @@ async function analyze(ticker) {
     0.25 * tech.score + 0.25 * fund.score + 0.20 * mom.score +
     0.15 * sentiment.score + 0.15 * analyst.score;
 
-  // Confidence: factor agreement + data completeness
   const scores = [tech.score, fund.score, mom.score, sentiment.score, analyst.score];
   const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
   const std = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length);
@@ -644,7 +607,6 @@ async function analyze(ticker) {
   if (Array.isArray(earningsD) && earningsD.length) sources.push("Finnhub earnings");
   confidence = clamp(confidence * (0.6 + 0.1 * Math.min(sources.length, 4)));
 
-  // Risk: beta + realized volatility + drawdown
   const beta = metricsD?.metric?.beta;
   let riskPoints = 0;
   if (beta != null) riskPoints += beta > 1.5 ? 2 : beta > 1.1 ? 1 : beta < 0.8 ? -1 : 0;
@@ -666,11 +628,114 @@ async function analyze(ticker) {
       sentiment: sentiment.score, analyst: analyst.score,
     },
     analystRating: analyst.rating,
+    metrics: fund.metrics,
     bullish: [...tech.bullish, ...fund.bullish, ...mom.bullish, ...sentiment.bullish, ...analyst.bullish],
     bearish: [...tech.bearish, ...fund.bearish, ...mom.bearish, ...sentiment.bearish, ...analyst.bearish],
     explanation: `${tech.detail} | ${fund.detail} | 1M: ${mom.r1m.toFixed(1)}%, Vol: ${mom.vol ? mom.vol.toFixed(0) + "%" : "N/A"}, MaxDD: -${mom.drawdown.toFixed(0)}% | Sentiment: ${sentiment.score.toFixed(0)}/100 | Analyst: ${analyst.rating}`,
     sources,
   };
+}
+
+/* ============================================================
+   PRICE CHART
+   ============================================================ */
+function smaArray(values, period) {
+  const out = new Array(values.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function drawChart(rows) {
+  const canvas = document.getElementById("price-chart");
+  if (!canvas || !rows || rows.length < 30) return;
+
+  const data = rows.slice(-252);
+  const closes = data.map((r) => r.close);
+  const ma20 = smaArray(closes, 20);
+  const ma50 = smaArray(closes, 50);
+
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.clientWidth || canvas.parentElement.clientWidth || 700;
+  const cssHeight = 220;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const pad = { top: 10, right: 8, bottom: 22, left: 48 };
+  const W = cssWidth - pad.left - pad.right;
+  const H = cssHeight - pad.top - pad.bottom;
+
+  const min = Math.min(...closes) * 0.98;
+  const max = Math.max(...closes) * 1.02;
+  const x = (i) => pad.left + (i / (closes.length - 1)) * W;
+  const y = (v) => pad.top + (1 - (v - min) / (max - min)) * H;
+
+  const textColor = cssVar("--text-muted") || "#888";
+  const gridColor = cssVar("--border") || "#ddd";
+  const priceColor = cssVar("--accent") || "#10b981";
+  const ma20Color = cssVar("--amber") || "#d97706";
+  const ma50Color = cssVar("--red") || "#dc2626";
+
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.fillStyle = textColor;
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) {
+    const v = min + ((max - min) * g) / 3;
+    const gy = y(v);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, gy);
+    ctx.lineTo(pad.left + W, gy);
+    ctx.stroke();
+    ctx.fillText("$" + v.toFixed(v > 100 ? 0 : 2), 4, gy + 3);
+  }
+
+  const dateLabel = (i) => data[i].date.slice(5);
+  ctx.fillText(dateLabel(0), pad.left, cssHeight - 6);
+  ctx.fillText(dateLabel(Math.floor(data.length / 2)), pad.left + W / 2 - 14, cssHeight - 6);
+  ctx.fillText(dateLabel(data.length - 1), pad.left + W - 32, cssHeight - 6);
+
+  function drawLine(series, color, width) {
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < series.length; i++) {
+      if (series[i] == null) continue;
+      const px = x(i), py = y(series[i]);
+      if (!started) { ctx.moveTo(px, py); started = true; }
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(x(0), y(closes[0]));
+  for (let i = 1; i < closes.length; i++) ctx.lineTo(x(i), y(closes[i]));
+  ctx.lineTo(x(closes.length - 1), pad.top + H);
+  ctx.lineTo(x(0), pad.top + H);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + H);
+  grad.addColorStop(0, priceColor + "33");
+  grad.addColorStop(1, priceColor + "00");
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  drawLine(ma50, ma50Color, 1.3);
+  drawLine(ma20, ma20Color, 1.3);
+  drawLine(closes, priceColor, 2);
 }
 
 /* ============================================================
@@ -702,6 +767,43 @@ function fillList(listId, items, emptyMsg) {
   }
 }
 
+function fmtMarketCap(millions) {
+  if (!millions) return "—";
+  if (millions >= 1e6) return "$" + (millions / 1e6).toFixed(2) + "T";
+  if (millions >= 1e3) return "$" + (millions / 1e3).toFixed(1) + "B";
+  return "$" + millions.toFixed(0) + "M";
+}
+
+function renderRange(a) {
+  const mk = a.metrics || {};
+  const low = mk.wkLow, high = mk.wkHigh, price = a.price;
+  const rangeFill = document.getElementById("range-fill");
+  const marker = document.getElementById("range-marker");
+  if (low && high && high > low && price) {
+    const pct = clamp(((price - low) / (high - low)) * 100);
+    rangeFill.style.width = pct + "%";
+    marker.style.left = pct + "%";
+    document.getElementById("range-pct").textContent = pct.toFixed(0) + "% of range";
+    document.getElementById("range-low").textContent = "$" + low.toFixed(2);
+    document.getElementById("range-high").textContent = "$" + high.toFixed(2);
+  } else {
+    rangeFill.style.width = "0%";
+    marker.style.left = "0%";
+    document.getElementById("range-pct").textContent = "—";
+    document.getElementById("range-low").textContent = "—";
+    document.getElementById("range-high").textContent = "—";
+  }
+}
+
+function renderMetrics(a) {
+  const m = a.metrics || {};
+  document.getElementById("m-pe").textContent = m.pe != null ? m.pe.toFixed(1) : "—";
+  document.getElementById("m-mcap").textContent = fmtMarketCap(m.marketCap);
+  document.getElementById("m-beta").textContent = m.beta != null ? m.beta.toFixed(2) : "—";
+  document.getElementById("m-div").textContent = m.divYield != null ? m.divYield.toFixed(2) + "%" : "—";
+  document.getElementById("m-sector").textContent = m.sector || "—";
+}
+
 function render(a) {
   document.getElementById("result-ticker").textContent = a.ticker;
   document.getElementById("result-name").textContent = a.name;
@@ -717,21 +819,23 @@ function render(a) {
   document.getElementById("price-value").textContent = a.price != null ? "$" + a.price.toFixed(2) : "—";
   document.getElementById("target-value").textContent = a.analystRating !== "N/A" ? a.analystRating : "—";
 
+  drawChart(a.rows);
+  renderRange(a);
+  renderMetrics(a);
+
   fillScore("technical-num", "technical-bar", a.scores.technical);
   fillScore("fundamental-num", "fundamental-bar", a.scores.fundamental);
   fillScore("momentum-num", "momentum-bar", a.scores.momentum);
   fillScore("sentiment-num", "sentiment-bar", a.scores.sentiment);
   fillScore("analyst-num", "analyst-bar", a.scores.analyst);
 
-drawChart(a.rows);
-  fillList("bullish-list", a.bullish, "No notable bullish signals.");
-  fillList("bearish-list", a.bearish, "No notable bearish signals.");
-  document.getElementById("explanation-text").textContent = a.explanation;
-
-  // Smart summary (the fix!)
   const summaryEl = document.getElementById("summary-text");
   if (summaryEl) summaryEl.textContent = buildSummary(a);
 
+  fillList("bullish-list", a.bullish, "No notable bullish signals.");
+  fillList("bearish-list", a.bearish, "No notable bearish signals.");
+
+  document.getElementById("explanation-text").textContent = a.explanation;
   document.getElementById("sources-value").textContent = a.sources.join(", ");
 
   setLoading(false);
@@ -743,6 +847,7 @@ drawChart(a.rows);
    ============================================================ */
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
+  hide(suggestionsEl);
   const ticker = input.value.trim().toUpperCase();
   if (!ticker) return;
 
@@ -758,21 +863,18 @@ form.addEventListener("submit", async (e) => {
   }
 });
 
-/* ---------- Theme toggle (works if you added the button) ---------- */
-const themeBtn = document.getElementById("theme-toggle");
-if (themeBtn) {
-  const saved = localStorage.getItem("theme");
-  if (saved) document.documentElement.dataset.theme = saved;
-  themeBtn.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("theme", next);
-  });
-}
+// Redraw chart on window resize (keeps it crisp)
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!resultsEl.classList.contains("hidden") && window.lastRows) drawChart(window.lastRows);
+  }, 200);
+});
+
 /* ============================================================
-   TICKER AUTOCOMPLETE (Finnhub symbol search)
+   AUTOCOMPLETE
    ============================================================ */
-const suggestionsEl = document.getElementById("suggestions");
 let suggestTimer = null;
 let lastQuery = "";
 
@@ -780,7 +882,6 @@ input.addEventListener("input", () => {
   const q = input.value.trim();
   clearTimeout(suggestTimer);
   if (q.length < 2) { hide(suggestionsEl); return; }
-  // Debounce: wait until typing pauses so we don't spam the API
   suggestTimer = setTimeout(() => fetchSuggestions(q), 300);
 });
 
@@ -811,122 +912,29 @@ function renderSuggestions(results) {
     div.addEventListener("click", () => {
       input.value = r.symbol;
       hide(suggestionsEl);
-      form.requestSubmit(); // auto-run the analysis on click
+      form.requestSubmit();
     });
     suggestionsEl.appendChild(div);
   }
   show(suggestionsEl);
 }
 
-// Hide suggestions when clicking elsewhere or submitting
 document.addEventListener("click", (e) => {
   if (!suggestionsEl.contains(e.target) && e.target !== input) hide(suggestionsEl);
 });
-form.addEventListener("submit", () => hide(suggestionsEl));
+
 /* ============================================================
-   PRICE CHART (canvas, 1 year, with MA20 / MA50)
+   THEME TOGGLE
    ============================================================ */
-function smaArray(values, period) {
-  const out = new Array(values.length).fill(null);
-  let sum = 0;
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= period) sum -= values[i - period];
-    if (i >= period - 1) out[i] = sum / period;
-  }
-  return out;
-}
-
-function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function drawChart(rows) {
-  const canvas = document.getElementById("price-chart");
-  if (!canvas || !rows || rows.length < 30) return;
-
-  // Last ~1 year of data
-  const data = rows.slice(-252);
-  const closes = data.map((r) => r.close);
-  const ma20 = smaArray(closes, 20);
-  const ma50 = smaArray(closes, 50);
-
-  // Sharp rendering on retina screens
-  const dpr = window.devicePixelRatio || 1;
-  const cssWidth = canvas.clientWidth || canvas.parentElement.clientWidth;
-  const cssHeight = 220;
-  canvas.width = cssWidth * dpr;
-  canvas.height = cssHeight * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-  const pad = { top: 10, right: 8, bottom: 22, left: 46 };
-  const W = cssWidth - pad.left - pad.right;
-  const H = cssHeight - pad.top - pad.bottom;
-
-  const min = Math.min(...closes) * 0.98;
-  const max = Math.max(...closes) * 1.02;
-  const x = (i) => pad.left + (i / (closes.length - 1)) * W;
-  const y = (v) => pad.top + (1 - (v - min) / (max - min)) * H;
-
-  const textColor = cssVar("--text-muted") || "#888";
-  const gridColor = cssVar("--border") || "#ddd";
-  const priceColor = cssVar("--accent") || "#10b981";
-  const ma20Color = cssVar("--amber") || "#d97706";
-  const ma50Color = cssVar("--red") || "#dc2626";
-
-  // Grid lines + price labels (4 levels)
-  ctx.font = "10px ui-monospace, monospace";
-  ctx.fillStyle = textColor;
-  ctx.strokeStyle = gridColor;
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 3; g++) {
-    const v = min + ((max - min) * g) / 3;
-    const gy = y(v);
-    ctx.beginPath();
-    ctx.moveTo(pad.left, gy);
-    ctx.lineTo(pad.left + W, gy);
-    ctx.stroke();
-    ctx.fillText("$" + v.toFixed(v > 100 ? 0 : 2), 4, gy + 3);
-  }
-
-  // Date labels: start, middle, end
-  const dateLabel = (i) => data[i].date.slice(5); // MM-DD
-  ctx.fillText(dateLabel(0), pad.left, cssHeight - 6);
-  ctx.fillText(dateLabel(Math.floor(data.length / 2)), pad.left + W / 2 - 14, cssHeight - 6);
-  ctx.fillText(dateLabel(data.length - 1), pad.left + W - 32, cssHeight - 6);
-
-  // Helper to draw a line series
-  function drawLine(series, color, width) {
-    ctx.beginPath();
-    let started = false;
-    for (let i = 0; i < series.length; i++) {
-      if (series[i] == null) continue;
-      const px = x(i), py = y(series[i]);
-      if (!started) { ctx.moveTo(px, py); started = true; }
-      else ctx.lineTo(px, py);
-    }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.stroke();
-  }
-
-  // Soft fill under the price line
-  ctx.beginPath();
-  ctx.moveTo(x(0), y(closes[0]));
-  for (let i = 1; i < closes.length; i++) ctx.lineTo(x(i), y(closes[i]));
-  ctx.lineTo(x(closes.length - 1), pad.top + H);
-  ctx.lineTo(x(0), pad.top + H);
-  ctx.closePath();
-  const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + H);
-  grad.addColorStop(0, priceColor + "33"); // ~20% opacity
-  grad.addColorStop(1, priceColor + "00");
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  // The three lines
-  drawLine(ma50, ma50Color, 1.3);
-  drawLine(ma20, ma20Color, 1.3);
-  drawLine(closes, priceColor, 2);
+const themeBtn = document.getElementById("theme-toggle");
+if (themeBtn) {
+  const saved = localStorage.getItem("theme");
+  if (saved) document.documentElement.dataset.theme = saved;
+  themeBtn.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("theme", next);
+    // Redraw chart so its colors match the new theme
+    if (window.lastRows) drawChart(window.lastRows);
+  });
 }
