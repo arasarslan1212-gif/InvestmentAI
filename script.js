@@ -1,940 +1,679 @@
 /* ============================================================
-   Stock Analyzer — script.js  (CLEAN POLISHED VERSION)
-   Price history: Stooq → Yahoo fallback (via CORS proxy)
-   Data: Finnhub (profile, quote, metrics, analyst, news, earnings)
-   AI sentiment: transformers.js in-browser (keyword fallback)
-   Features: autocomplete, price chart, 52-week range, metrics
+   MarketLens — styles.css
+   Dark-first fintech theme with light mode.
    ============================================================ */
 
-// ⬇️ YOUR FREE FINNHUB KEY
-const FINNHUB_KEY = "d8kpsp1r01qut1f6usrgd8kpsp1r01qut1f6uss0";
-
-const FINNHUB_BASE = "https://finnhub.io/api/v1";
-const PROXY = "https://corsproxy.io/?url=";
-
-/* ---------- DOM ---------- */
-const form = document.getElementById("search-form");
-const input = document.getElementById("ticker-input");
-const analyzeBtn = document.getElementById("analyze-btn");
-const loadingEl = document.getElementById("loading");
-const loadingText = document.getElementById("loading-text");
-const errorEl = document.getElementById("error");
-const errorText = document.getElementById("error-text");
-const resultsEl = document.getElementById("results");
-const suggestionsEl = document.getElementById("suggestions");
-
-function show(el) { if (el) el.classList.remove("hidden"); }
-function hide(el) { if (el) el.classList.add("hidden"); }
-
-function setLoading(on, msg) {
-  if (on) {
-    hide(errorEl); hide(resultsEl);
-    if (msg) loadingText.textContent = msg;
-    show(loadingEl);
-    analyzeBtn.disabled = true;
-  } else {
-    hide(loadingEl);
-    analyzeBtn.disabled = false;
-  }
+:root {
+  --bg: #0b0f17;
+  --bg-soft: #0f1522;
+  --surface: #141b2b;
+  --surface-2: #1a2338;
+  --border: #24304a;
+  --text: #e8edf7;
+  --text-muted: #8b97b0;
+  --accent: #4fd1a5;         /* main teal-green */
+  --accent-soft: rgba(79, 209, 165, 0.12);
+  --up: #4fd1a5;
+  --down: #f0716f;
+  --warn: #e8b959;
+  --ma20: #6ea8fe;
+  --ma50: #c78bfa;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --radius: 16px;
+  --radius-sm: 12px;
+  --display: "Space Grotesk", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+  --body: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-function showError(msg) {
-  setLoading(false);
-  hide(resultsEl);
-  errorText.textContent = msg;
-  show(errorEl);
+[data-theme="light"] {
+  --bg: #f5f7fb;
+  --bg-soft: #eef1f7;
+  --surface: #ffffff;
+  --surface-2: #f2f5fa;
+  --border: #dfe5f0;
+  --text: #17203a;
+  --text-muted: #5d6a85;
+  --accent: #0e9f76;
+  --accent-soft: rgba(14, 159, 118, 0.10);
+  --up: #0e9f76;
+  --down: #d5504e;
+  --shadow: 0 10px 24px rgba(23, 32, 58, 0.08);
 }
 
-function clamp(v, lo = 0, hi = 100) { return Math.max(lo, Math.min(hi, v)); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ============================================================
-   DATA FETCHING
-   ============================================================ */
-function proxied(url) { return PROXY + encodeURIComponent(url); }
+html { scroll-behavior: smooth; }
 
-async function fetchFromStooq(ticker) {
-  const url = `https://stooq.com/q/d/l/?s=${ticker.toLowerCase()}.us&i=d`;
-  const res = await fetch(proxied(url));
-  if (!res.ok) throw new Error("stooq-failed");
-  const text = await res.text();
-  if (text.trim().toLowerCase().startsWith("no data") || !text.includes(",")) throw new Error("stooq-nodata");
-  const lines = text.trim().split("\n");
-  if (!lines[0].toLowerCase().startsWith("date")) throw new Error("stooq-format");
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const p = lines[i].split(",");
-    if (p.length < 5) continue;
-    const close = parseFloat(p[4]);
-    if (Number.isNaN(close)) continue;
-    rows.push({ date: p[0], open: +p[1], high: +p[2], low: +p[3], close, volume: +p[5] || 0 });
-  }
-  if (rows.length < 60) throw new Error("stooq-short");
-  return rows;
+body {
+  font-family: var(--body);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  transition: background 250ms, color 250ms;
 }
 
-async function fetchFromYahoo(ticker) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2y&interval=1d`;
-  const res = await fetch(proxied(url));
-  if (!res.ok) throw new Error("yahoo-failed");
-  const data = await res.json();
-  const r = data?.chart?.result?.[0];
-  if (!r) throw new Error("yahoo-nodata");
-  const ts = r.timestamp || [];
-  const q = r.indicators?.quote?.[0] || {};
-  const rows = [];
-  for (let i = 0; i < ts.length; i++) {
-    const close = q.close?.[i];
-    if (close == null) continue;
-    rows.push({
-      date: new Date(ts[i] * 1000).toISOString().slice(0, 10),
-      open: q.open?.[i] ?? close, high: q.high?.[i] ?? close,
-      low: q.low?.[i] ?? close, close, volume: q.volume?.[i] ?? 0,
-    });
-  }
-  if (rows.length < 60) throw new Error("yahoo-short");
-  return rows;
+.mono { font-family: var(--mono); }
+.muted { color: var(--text-muted); }
+.small { font-size: 0.82rem; }
+.center { text-align: center; }
+.hidden { display: none !important; }
+
+/* ---------- Header ---------- */
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  z-index: 50;
 }
 
-async function fetchPriceHistory(ticker) {
-  try { return { rows: await fetchFromStooq(ticker), source: "Stooq" }; }
-  catch (e) {
-    console.warn("Stooq failed, trying Yahoo:", e.message);
-    try { return { rows: await fetchFromYahoo(ticker), source: "Yahoo Finance" }; }
-    catch (e2) {
-      throw new Error(`Couldn't load price history for "${ticker.toUpperCase()}". Check the ticker, or the source may be down.`);
-    }
-  }
+.brand { display: flex; align-items: center; gap: 12px; }
+
+.brand-mark {
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent), #2b8ea3);
+  color: #06251c;
+  font-family: var(--display);
+  font-weight: 700;
 }
 
-async function finnhub(path, params = {}) {
-  const qs = new URLSearchParams({ ...params, token: FINNHUB_KEY });
-  const res = await fetch(`${FINNHUB_BASE}${path}?${qs}`);
-  if (res.status === 401 || res.status === 403) throw new Error("Finnhub rejected the API key.");
-  if (res.status === 429) throw new Error("Finnhub rate limit hit. Wait a minute.");
-  if (!res.ok) throw new Error("Finnhub request failed.");
-  return res.json();
+.brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-name { font-family: var(--display); font-weight: 700; font-size: 1.05rem; }
+.brand-sub { font-size: 0.72rem; color: var(--text-muted); }
+
+.tabs { display: flex; gap: 6px; }
+
+.tab-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--display);
+  font-size: 0.92rem;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 150ms;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
 }
 
-const fetchProfile = (t) => finnhub("/stock/profile2", { symbol: t });
-const fetchQuote = (t) => finnhub("/quote", { symbol: t });
-const fetchMetrics = (t) => finnhub("/stock/metric", { symbol: t, metric: "all" });
-const fetchRecommendations = (t) => finnhub("/stock/recommendation", { symbol: t });
-const fetchEarnings = (t) => finnhub("/stock/earnings", { symbol: t });
-
-function fetchNews(t) {
-  const to = new Date(), from = new Date();
-  from.setDate(to.getDate() - 30);
-  const f = (d) => d.toISOString().slice(0, 10);
-  return finnhub("/company-news", { symbol: t, from: f(from), to: f(to) });
+.badge {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-align: center;
 }
 
-/* ============================================================
-   INDICATORS
-   ============================================================ */
-function sma(values, period, offset = 0) {
-  const end = values.length - offset;
-  if (end < period) return null;
-  let s = 0;
-  for (let i = end - period; i < end; i++) s += values[i];
-  return s / period;
+.theme-toggle-btn {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.05rem;
+  cursor: pointer;
+  transition: transform 150ms;
+}
+.theme-toggle-btn:hover { transform: rotate(20deg); }
+
+/* ---------- Layout ---------- */
+main { max-width: 1060px; margin: 0 auto; padding: 32px 20px 60px; }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; animation: fadeUp 300ms ease; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
 }
 
-function emaSeries(values, period) {
-  const k = 2 / (period + 1), out = [];
-  let prev;
-  for (let i = 0; i < values.length; i++) {
-    if (i < period - 1) { out.push(null); continue; }
-    if (i === period - 1) prev = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-    else prev = values[i] * k + prev * (1 - k);
-    out.push(prev);
-  }
-  return out;
+/* ---------- Search / hero ---------- */
+.search-section { text-align: center; margin-bottom: 26px; position: relative; }
+
+.hero-title {
+  font-family: var(--display);
+  font-size: clamp(1.5rem, 3.4vw, 2.2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
-function rsiSeries(closes, period = 14) {
-  const out = new Array(closes.length).fill(null);
-  if (closes.length < period + 1) return out;
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d >= 0) gains += d; else losses -= d;
-  }
-  let ag = gains / period, al = losses / period;
-  out[period] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-  for (let i = period + 1; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    ag = (ag * (period - 1) + (d > 0 ? d : 0)) / period;
-    al = (al * (period - 1) + (d < 0 ? -d : 0)) / period;
-    out[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-  }
-  return out;
+.hero-sub { color: var(--text-muted); margin: 8px 0 22px; font-size: 0.95rem; }
+
+#search-form {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  max-width: 560px;
+  margin: 0 auto;
 }
 
-function macdSeries(closes) {
-  const fast = emaSeries(closes, 12), slow = emaSeries(closes, 26);
-  const line = closes.map((_, i) => (fast[i] != null && slow[i] != null ? fast[i] - slow[i] : null));
-  const valid = line.filter((v) => v != null);
-  const sig = emaSeries(valid, 9);
-  const pad = line.length - valid.length;
-  const signal = new Array(pad).fill(null).concat(sig);
-  return { line, signal };
+#ticker-input {
+  flex: 1;
+  padding: 13px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+#ticker-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-function bollinger(closes, period = 20) {
-  if (closes.length < period) return null;
-  const slice = closes.slice(-period);
-  const mean = slice.reduce((a, b) => a + b, 0) / period;
-  const std = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period);
-  const upper = mean + 2 * std, lower = mean - 2 * std;
-  const price = closes[closes.length - 1];
-  return {
-    pos: upper === lower ? 0.5 : (price - lower) / (upper - lower),
-    width: mean ? ((upper - lower) / mean) * 100 : 0,
-  };
+.btn {
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 12px 20px;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: transform 120ms, opacity 120ms, background 150ms;
+}
+.btn:active { transform: scale(0.97); }
+
+.btn-primary { background: var(--accent); color: #06251c; }
+.btn-primary:hover { opacity: 0.9; }
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 9px 14px;
+  font-size: 0.85rem;
+}
+.btn-ghost:hover { background: var(--surface-2); }
+
+/* ---------- Autocomplete ---------- */
+.suggestions {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 100%;
+  width: 100%;
+  max-width: 560px;
+  margin-top: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  z-index: 40;
+  text-align: left;
 }
 
-function stochastic(rows, kPeriod = 14) {
-  if (rows.length < kPeriod) return null;
-  const slice = rows.slice(-kPeriod);
-  const hi = Math.max(...slice.map((r) => r.high));
-  const lo = Math.min(...slice.map((r) => r.low));
-  const c = rows[rows.length - 1].close;
-  return hi === lo ? 50 : ((c - lo) / (hi - lo)) * 100;
+.suggestion-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  border-bottom: 1px solid var(--border);
+  transition: background 100ms;
+}
+.suggestion-item:last-child { border-bottom: none; }
+.suggestion-item:hover, .suggestion-item.sel { background: var(--accent-soft); }
+.suggestion-symbol { font-family: var(--mono); font-weight: 700; }
+.suggestion-name {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-function annualizedVol(closes, lookback = 20) {
-  if (closes.length < lookback + 1) return null;
-  const rets = [];
-  for (let i = closes.length - lookback; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
-  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
-  const v = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length);
-  return v * Math.sqrt(252) * 100;
+/* ---------- Chips + history ---------- */
+.quick-chips { margin-top: 16px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+
+.chip {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 150ms;
+}
+.chip:hover { color: var(--accent); border-color: var(--accent); }
+
+.history-strip { margin-top: 14px; font-size: 0.82rem; color: var(--text-muted); }
+.history-label { margin-right: 6px; }
+.history-item {
+  font-family: var(--mono);
+  color: var(--accent);
+  cursor: pointer;
+  margin: 0 5px;
+  text-decoration: none;
+}
+.history-item:hover { text-decoration: underline; }
+
+/* ---------- Status ---------- */
+.status {
+  max-width: 560px;
+  margin: 0 auto 24px;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.9rem;
+  text-align: center;
+}
+.status.error { border-color: var(--down); color: var(--down); }
+.status.loading { color: var(--text-muted); }
+.status.notice { border-color: var(--warn); color: var(--warn); }
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  box-shadow: var(--shadow);
+  margin-bottom: 18px;
 }
 
-function maxDrawdown(closes, lookback = 252) {
-  const slice = closes.slice(-lookback);
-  let peak = slice[0], maxDD = 0;
-  for (const c of slice) {
-    if (c > peak) peak = c;
-    const dd = (peak - c) / peak;
-    if (dd > maxDD) maxDD = dd;
-  }
-  return maxDD * 100;
+.card-title { font-family: var(--display); font-size: 1rem; margin-bottom: 14px; }
+
+.section-title {
+  font-family: var(--display);
+  font-size: 1rem;
+  margin: 6px 0 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
 }
 
-/* ============================================================
-   SCORING — TECHNICAL
-   ============================================================ */
-function scoreTechnical(rows) {
-  const closes = rows.map((r) => r.close);
-  const price = closes[closes.length - 1];
-  let score = 50;
-  const bullish = [], bearish = [];
+/* ---------- Profile card ---------- */
+.profile-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.profile-left { display: flex; align-items: center; gap: 14px; }
 
-  const rsiS = rsiSeries(closes);
-  const rsi = rsiS[rsiS.length - 1] ?? 50;
-  const rsiPrev = rsiS[rsiS.length - 6] ?? rsi;
-  if (rsi < 30) { score += 12; bullish.push(`RSI oversold (${rsi.toFixed(1)})`); }
-  else if (rsi > 70) { score -= 12; bearish.push(`RSI overbought (${rsi.toFixed(1)})`); }
-  if (rsi > rsiPrev + 5 && rsi < 60) { score += 4; bullish.push("RSI recovering upward"); }
-  else if (rsi < rsiPrev - 5 && rsi > 40) { score -= 4; bearish.push("RSI rolling over"); }
+.p-logo { width: 46px; height: 46px; border-radius: 10px; background: #fff; object-fit: contain; }
 
-  const { line, signal } = macdSeries(closes);
-  const macd = line[line.length - 1] ?? 0;
-  const sig = signal[signal.length - 1] ?? 0;
-  const hist = macd - sig;
-  const histPrev = (line[line.length - 4] ?? 0) - (signal[signal.length - 4] ?? 0);
-  if (hist > 0 && hist > histPrev) { score += 10; bullish.push("MACD bullish and strengthening"); }
-  else if (hist > 0) { score += 6; bullish.push("MACD above signal"); }
-  else if (hist < 0 && hist < histPrev) { score -= 10; bearish.push("MACD bearish and weakening"); }
-  else { score -= 6; bearish.push("MACD below signal"); }
+.p-name-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.p-name-row h2 { font-family: var(--display); font-size: 1.25rem; }
+.p-symbol { color: var(--accent); font-weight: 700; }
 
-  const ma20 = sma(closes, 20), ma50 = sma(closes, 50), ma200 = sma(closes, 200);
-  const ma20Prev = sma(closes, 20, 10);
-  if (ma20 && ma50) {
-    const slope20 = ma20Prev ? ((ma20 - ma20Prev) / ma20Prev) * 100 : 0;
-    if (price > ma20 && ma20 > ma50 && slope20 > 0.5) { score += 14; bullish.push(`Strong uptrend (MA20 +${slope20.toFixed(1)}%/2wk)`); }
-    else if (price > ma20 && ma20 > ma50) { score += 8; bullish.push("Uptrend structure intact"); }
-    else if (price < ma20 && ma20 < ma50 && slope20 < -0.5) { score -= 14; bearish.push(`Strong downtrend (MA20 ${slope20.toFixed(1)}%/2wk)`); }
-    else if (price < ma20 && ma20 < ma50) { score -= 8; bearish.push("Downtrend structure"); }
+.p-meta { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
+.p-meta .dot { margin: 0 6px; }
 
-    const ma50_15 = sma(closes, 50, 15), ma200_15 = sma(closes, 200, 15);
-    if (ma200 && ma200_15 && ma50_15) {
-      if (ma50 > ma200 && ma50_15 <= ma200_15) { score += 8; bullish.push("Recent golden cross (MA50 > MA200)"); }
-      if (ma50 < ma200 && ma50_15 >= ma200_15) { score -= 8; bearish.push("Recent death cross (MA50 < MA200)"); }
-    }
-    if (ma200 && price > ma200) { score += 4; bullish.push("Above 200-day MA"); }
-    else if (ma200 && price < ma200) { score -= 4; bearish.push("Below 200-day MA"); }
-  }
+.profile-right { text-align: right; }
+.p-price { font-size: 1.6rem; font-weight: 700; }
+.p-change { font-size: 0.95rem; }
+.p-change.up { color: var(--up); }
+.p-change.down { color: var(--down); }
 
-  const bb = bollinger(closes);
-  if (bb) {
-    if (bb.pos < 0.08) { score += 8; bullish.push("At lower Bollinger Band"); }
-    else if (bb.pos > 0.92) { score -= 8; bearish.push("At upper Bollinger Band"); }
-    if (bb.width < 6) bullish.push(`Bollinger squeeze (${bb.width.toFixed(1)}%) — big move may be coming`);
-  }
+/* ---------- Verdict card ---------- */
+.verdict-card { display: flex; gap: 26px; align-items: center; flex-wrap: wrap; }
 
-  const stoch = stochastic(rows);
-  if (stoch != null) {
-    if (stoch < 20 && rsi < 40) { score += 5; bullish.push("Stochastic confirms oversold"); }
-    else if (stoch > 80 && rsi > 60) { score -= 5; bearish.push("Stochastic confirms overbought"); }
-  }
+.gauge-wrap { position: relative; width: 150px; height: 150px; flex-shrink: 0; }
+#gauge-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 
-  if (rows.length >= 20) {
-    let upVol = 0, downVol = 0;
-    for (let i = rows.length - 20; i < rows.length; i++) {
-      if (rows[i].close >= rows[i].open) upVol += rows[i].volume;
-      else downVol += rows[i].volume;
-    }
-    if (upVol > downVol * 1.4) { score += 6; bullish.push("Accumulation (volume on up days)"); }
-    else if (downVol > upVol * 1.4) { score -= 6; bearish.push("Distribution (volume on down days)"); }
-  }
-
-  return {
-    score: clamp(score), bullish, bearish,
-    detail: `RSI=${rsi.toFixed(1)}, MACD_hist=${hist.toFixed(3)}, BB_pos=${bb ? bb.pos.toFixed(2) : "N/A"}`,
-  };
+.gauge-track { fill: none; stroke: var(--surface-2); stroke-width: 10; }
+.gauge-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-dasharray: 326.7;   /* 2πr, r=52 */
+  stroke-dashoffset: 326.7;
+  transition: stroke-dashoffset 900ms ease, stroke 300ms;
 }
 
-/* ============================================================
-   SCORING — MOMENTUM & RISK
-   ============================================================ */
-function scoreMomentum(rows) {
-  const c = rows.map((r) => r.close);
-  const n = c.length;
-  const ret = (d) => (n > d ? (c[n - 1] / c[n - 1 - d] - 1) * 100 : null);
-  const r1w = ret(5), r1m = ret(21), r3m = ret(63);
-  let score = 50;
-  const bullish = [], bearish = [];
+.gauge-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+}
+.score-value { font-size: 2rem; font-weight: 700; }
+.score-label { font-size: 0.72rem; color: var(--text-muted); }
 
-  const frames = [r1w, r1m, r3m].filter((v) => v != null);
-  if (frames.length >= 3 && frames.every((v) => v > 0)) { score += 10; bullish.push("Positive momentum across all timeframes"); }
-  if (frames.length >= 3 && frames.every((v) => v < 0)) { score -= 10; bearish.push("Negative momentum across all timeframes"); }
+.verdict-main { flex: 1; min-width: 260px; }
+.verdict-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 
-  if (r1m != null) {
-    if (r1m > 10) { score += 10; bullish.push(`Strong month (+${r1m.toFixed(1)}%)`); }
-    else if (r1m < -10) { score -= 10; bearish.push(`Weak month (${r1m.toFixed(1)}%)`); }
-  }
-  if (r3m != null) {
-    if (r3m > 20) { score += 8; bullish.push(`Strong quarter (+${r3m.toFixed(1)}%)`); }
-    else if (r3m < -20) { score -= 8; bearish.push(`Weak quarter (${r3m.toFixed(1)}%)`); }
-  }
-  if (r1w != null && r1w > 15) { score -= 4; bearish.push(`Parabolic week (+${r1w.toFixed(1)}%) — pullback risk`); }
+.verdict-badge {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 6px 16px;
+  border-radius: 999px;
+  letter-spacing: 0.05em;
+}
+.verdict-badge.buy  { background: rgba(79,209,165,0.15); color: var(--up); }
+.verdict-badge.hold { background: rgba(232,185,89,0.15); color: var(--warn); }
+.verdict-badge.sell { background: rgba(240,113,111,0.15); color: var(--down); }
 
-  const vol = annualizedVol(c);
-  if (vol != null) {
-    if (vol > 55) { score -= 6; bearish.push(`High volatility (${vol.toFixed(0)}%)`); }
-    else if (vol < 18) { score += 3; bullish.push(`Low volatility (${vol.toFixed(0)}%)`); }
-  }
+.confidence { font-size: 0.82rem; color: var(--text-muted); }
 
-  const dd = maxDrawdown(c);
-  if (dd > 35) { score -= 5; bearish.push(`Deep 1-yr drawdown (-${dd.toFixed(0)}%)`); }
-  else if (dd < 12) { score += 4; bullish.push(`Shallow drawdowns (max -${dd.toFixed(0)}%)`); }
+.summary-heading { font-family: var(--display); font-size: 0.95rem; margin-bottom: 6px; }
+#summary-text { font-size: 0.92rem; line-height: 1.65; color: var(--text); }
 
-  return { score: clamp(score), bullish, bearish, r1m: r1m ?? 0, vol, drawdown: dd };
+.verdict-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+#btn-watch.active { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Factor grid ---------- */
+.factor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
 }
 
-/* ============================================================
-   SCORING — FUNDAMENTAL
-   ============================================================ */
-function peThresholds(industry) {
-  const ind = (industry || "").toLowerCase();
-  const growth = ["technology", "software", "semiconductors", "biotechnology", "media", "communication", "internet"];
-  const value = ["bank", "insurance", "energy", "utilities", "oil", "financial", "mining"];
-  if (growth.some((g) => ind.includes(g))) return { cheap: 35, expensive: 55 };
-  if (value.some((v) => ind.includes(v))) return { cheap: 12, expensive: 22 };
-  return { cheap: 18, expensive: 35 };
+.factor-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: border-color 150ms;
+}
+.factor-card:hover { border-color: var(--accent); }
+
+.factor-head { display: flex; justify-content: space-between; align-items: baseline; }
+.factor-name { font-size: 0.82rem; color: var(--text-muted); }
+.factor-score { font-family: var(--mono); font-weight: 700; font-size: 1.1rem; }
+
+.factor-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  margin-top: 10px;
+  overflow: hidden;
+}
+.factor-fill {
+  height: 100%;
+  border-radius: 999px;
+  width: 0;
+  transition: width 700ms ease;
 }
 
-function scoreFundamental(metricData, profileD, price, earningsD) {
-  const m = (metricData && metricData.metric) || {};
-  const industry = profileD?.finnhubIndustry;
-  let score = 50;
-  const bullish = [], bearish = [];
+.factor-why {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: none;
+}
+.factor-card.open .factor-why { display: block; }
+.factor-hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 8px; opacity: 0.7; }
 
-  const pe = m.peTTM ?? m.peBasicExclExtraTTM;
-  const roe = m.roeTTM;
-  const debtEq = m["totalDebt/totalEquityQuarterly"] ?? m.longTermDebt2EquityQuarterly;
-  const revGrowth = m.revenueGrowthTTMYoy;
-  const epsGrowth = m.epsGrowthTTMYoy;
-  const netMargin = m.netProfitMarginTTM;
-  const grossMargin = m.grossMarginTTM;
-  const divYield = m.currentDividendYieldTTM;
-  const wkHigh = m["52WeekHigh"], wkLow = m["52WeekLow"];
+/* ---------- Chart ---------- */
+.chart-card { padding-bottom: 16px; }
+.chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
+.chart-head h3 { font-family: var(--display); font-size: 1rem; }
 
-  const th = peThresholds(industry);
-  if (pe != null) {
-    if (pe > 0 && pe < th.cheap) { score += 12; bullish.push(`P/E ${pe.toFixed(1)} reasonable for ${industry || "sector"}`); }
-    else if (pe > th.expensive) { score -= 12; bearish.push(`P/E ${pe.toFixed(1)} expensive for ${industry || "sector"}`); }
-    else if (pe < 0) { score -= 8; bearish.push("Negative earnings (no meaningful P/E)"); }
-  }
+.chart-legend { display: flex; gap: 14px; font-size: 0.75rem; color: var(--text-muted); }
+.lg::before { content: ""; display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.lg-price::before { background: var(--accent); }
+.lg-ma20::before { background: var(--ma20); }
+.lg-ma50::before { background: var(--ma50); }
 
-  if (pe != null && pe > 0 && epsGrowth != null && epsGrowth > 0) {
-    const peg = pe / epsGrowth;
-    if (peg < 1.2) { score += 8; bullish.push(`Cheap vs growth (PEG ≈ ${peg.toFixed(2)})`); }
-    else if (peg > 3) { score -= 6; bearish.push(`Expensive vs growth (PEG ≈ ${peg.toFixed(2)})`); }
-  }
+.chart-wrap { position: relative; }
+#price-chart { width: 100%; height: 300px; display: block; }
 
-  if (roe != null) {
-    if (roe > 20) { score += 10; bullish.push(`Excellent ROE (${roe.toFixed(1)}%)`); }
-    else if (roe > 12) { score += 6; bullish.push(`Solid ROE (${roe.toFixed(1)}%)`); }
-    else if (roe < 5) { score -= 7; bearish.push(`Weak ROE (${roe.toFixed(1)}%)`); }
-  }
-  if (grossMargin != null && grossMargin > 50) { score += 4; bullish.push(`Strong gross margin (${grossMargin.toFixed(0)}%)`); }
-  if (netMargin != null) {
-    if (netMargin > 20) { score += 5; bullish.push(`High net margin (${netMargin.toFixed(1)}%)`); }
-    else if (netMargin < 0) { score -= 8; bearish.push("Currently unprofitable"); }
-  }
-
-  if (debtEq != null) {
-    if (debtEq < 0.4) { score += 6; bullish.push("Conservative balance sheet"); }
-    else if (debtEq > 2) { score -= 12; bearish.push(`Heavy debt (D/E ${debtEq.toFixed(2)})`); }
-    else if (debtEq > 1.2) { score -= 6; bearish.push(`Elevated debt (D/E ${debtEq.toFixed(2)})`); }
-  }
-
-  if (revGrowth != null) {
-    if (revGrowth > 15) { score += 10; bullish.push(`Strong revenue growth (${revGrowth.toFixed(1)}%)`); }
-    else if (revGrowth < -5) { score -= 10; bearish.push(`Shrinking revenue (${revGrowth.toFixed(1)}%)`); }
-  }
-
-  if (Array.isArray(earningsD) && earningsD.length > 0) {
-    const last4 = earningsD.slice(0, 4);
-    const beats = last4.filter((e) => e.surprise != null && e.surprise > 0).length;
-    const misses = last4.filter((e) => e.surprise != null && e.surprise < 0).length;
-    if (beats >= 3) { score += 8; bullish.push(`Beat estimates ${beats}/${last4.length} quarters`); }
-    else if (misses >= 2) { score -= 8; bearish.push(`Missed estimates ${misses}/${last4.length} quarters`); }
-  }
-
-  if (divYield != null && divYield > 2 && divYield < 6) { score += 3; bullish.push(`Pays dividend (${divYield.toFixed(1)}%)`); }
-
-  let rangePos = null;
-  if (wkHigh && wkLow && wkHigh > wkLow && price) {
-    rangePos = (price - wkLow) / (wkHigh - wkLow);
-    if (rangePos > 0.85) { score += 4; bullish.push(`Near 52-week high (${(rangePos * 100).toFixed(0)}%)`); }
-    else if (rangePos < 0.2) { score -= 4; bearish.push(`Near 52-week low (${(rangePos * 100).toFixed(0)}%) — investigate`); }
-  }
-
-  return {
-    score: clamp(score), bullish, bearish,
-    detail: `P/E=${pe != null ? pe.toFixed(1) : "N/A"} (${industry || "?"}), ROE=${roe != null ? roe.toFixed(1) + "%" : "N/A"}, RevG=${revGrowth != null ? revGrowth.toFixed(1) + "%" : "N/A"}`,
-    metrics: { pe, beta: m.beta, divYield, wkHigh, wkLow, marketCap: profileD?.marketCapitalization, sector: industry },
-  };
+.chart-tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  z-index: 5;
 }
 
-/* ============================================================
-   SCORING — ANALYST
-   ============================================================ */
-function scoreAnalyst(recArray) {
-  let score = 50;
-  const bullish = [], bearish = [];
-  let rating = "N/A";
+.range-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.range-cap { font-size: 0.78rem; color: var(--text-muted); }
+.range-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--down), var(--warn), var(--up));
+  position: relative;
+}
+.range-marker {
+  position: absolute;
+  top: 50%;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 3px solid var(--bg);
+  transform: translate(-50%, -50%);
+  transition: left 700ms ease;
+}
+.range-title { text-align: center; font-size: 0.72rem; color: var(--text-muted); margin-top: 6px; }
 
-  if (Array.isArray(recArray) && recArray.length > 0) {
-    const weightedOf = (r) => {
-      const total = (r.strongBuy || 0) + (r.buy || 0) + (r.hold || 0) + (r.sell || 0) + (r.strongSell || 0);
-      if (!total) return null;
-      return ((r.strongBuy || 0) * 100 + (r.buy || 0) * 75 + (r.hold || 0) * 50 + (r.sell || 0) * 25) / total;
-    };
-    const now = weightedOf(recArray[0]);
-    if (now != null) {
-      score = now;
-      rating = now >= 75 ? "Strong Buy" : now >= 60 ? "Buy" : now >= 45 ? "Hold" : now >= 30 ? "Sell" : "Strong Sell";
-      const bull = (recArray[0].strongBuy || 0) + (recArray[0].buy || 0);
-      const bear = (recArray[0].sell || 0) + (recArray[0].strongSell || 0);
-      if (bull > bear) bullish.push(`Analysts lean bullish (${bull} buy vs ${bear} sell)`);
-      else if (bear > bull) bearish.push(`Analysts lean bearish (${bear} sell vs ${bull} buy)`);
-      if (recArray.length >= 4) {
-        const past = weightedOf(recArray[3]);
-        if (past != null) {
-          if (now > past + 5) { score = clamp(score + 5); bullish.push("Analyst sentiment improving"); }
-          else if (now < past - 5) { score = clamp(score - 5); bearish.push("Analyst sentiment deteriorating"); }
-        }
-      }
-    }
-  }
-  return { score: clamp(score), bullish, bearish, rating };
+.metric-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+.metric-cell {
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  text-align: center;
+}
+.metric-cell .k { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.metric-cell .v { font-family: var(--mono); font-weight: 700; font-size: 0.92rem; margin-top: 4px; }
+
+/* ---------- Two-column + stat grids ---------- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+@media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
+
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.85rem;
+}
+.stat-row .k { color: var(--text-muted); }
+.stat-row .v { font-family: var(--mono); font-weight: 600; }
+.v.good { color: var(--up); }
+.v.bad { color: var(--down); }
+
+/* ---------- Analyst bars ---------- */
+.analyst-bars { display: flex; flex-direction: column; gap: 10px; }
+.abar { display: grid; grid-template-columns: 92px 1fr 36px; align-items: center; gap: 10px; font-size: 0.8rem; }
+.abar .k { color: var(--text-muted); }
+.abar .track { height: 10px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.abar .fill { height: 100%; border-radius: 999px; width: 0; transition: width 700ms ease; }
+.abar .n { font-family: var(--mono); text-align: right; }
+
+/* ---------- Risk ---------- */
+.risk-track {
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin: 12px 0 8px;
+}
+.risk-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--up), var(--warn), var(--down));
+  transition: width 700ms ease;
+}
+.risk-scale { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 10px; }
+
+/* ---------- News ---------- */
+.news-list { list-style: none; }
+.news-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.news-item:last-child { border-bottom: none; }
+
+.sent-tag {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  margin-top: 2px;
+}
+.sent-tag.pos { background: rgba(79,209,165,0.15); color: var(--up); }
+.sent-tag.neg { background: rgba(240,113,111,0.15); color: var(--down); }
+.sent-tag.neu { background: var(--surface-2); color: var(--text-muted); }
+
+.news-item a { color: var(--text); text-decoration: none; font-size: 0.88rem; line-height: 1.45; }
+.news-item a:hover { color: var(--accent); }
+.news-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 3px; }
+
+/* ---------- Compare ---------- */
+.compare-form { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+.cmp-input {
+  width: 130px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  text-align: center;
+  outline: none;
+}
+.cmp-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.vs { color: var(--text-muted); font-size: 0.8rem; }
+
+.compare-result { overflow-x: auto; }
+
+.cmp-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.cmp-table th, .cmp-table td {
+  padding: 12px 16px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+.cmp-table th:first-child, .cmp-table td:first-child {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.cmp-table thead th {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 1rem;
+  background: var(--surface-2);
+}
+.cmp-table td.win { color: var(--up); font-weight: 700; }
+.cmp-table td .mono { font-weight: 600; }
+
+/* ---------- Watchlist ---------- */
+.watchlist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
 }
 
-/* ============================================================
-   SCORING — AI SENTIMENT
-   ============================================================ */
-let sentimentPipeline = null;
-let sentimentLoadFailed = false;
+.watch-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 150ms, transform 150ms;
+}
+.watch-card:hover { border-color: var(--accent); transform: translateY(-2px); }
 
-async function getSentimentModel() {
-  if (sentimentPipeline) return sentimentPipeline;
-  if (sentimentLoadFailed) return null;
-  try {
-    const { pipeline } = await import("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2");
-    sentimentPipeline = await pipeline("sentiment-analysis");
-    return sentimentPipeline;
-  } catch (e) {
-    console.warn("AI model load failed, using keywords:", e);
-    sentimentLoadFailed = true;
-    return null;
-  }
+.watch-head { display: flex; justify-content: space-between; align-items: baseline; }
+.watch-sym { font-family: var(--mono); font-weight: 700; font-size: 1rem; }
+.watch-score { font-family: var(--mono); font-weight: 700; }
+
+.watch-name { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watch-row { display: flex; justify-content: space-between; margin-top: 10px; font-size: 0.8rem; }
+.watch-verdict { font-weight: 700; }
+.watch-verdict.buy { color: var(--up); }
+.watch-verdict.hold { color: var(--warn); }
+.watch-verdict.sell { color: var(--down); }
+.watch-date { font-size: 0.68rem; color: var(--text-muted); margin-top: 8px; }
+
+.watch-remove {
+  position: absolute;
+  top: 8px; right: 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+.watch-card:hover .watch-remove { opacity: 1; }
+.watch-remove:hover { color: var(--down); }
+
+/* ---------- Footer ---------- */
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: 22px;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.site-footer p + p { margin-top: 6px; }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 640px) {
+  .site-header { flex-wrap: wrap; }
+  .tabs { order: 3; width: 100%; justify-content: center; }
+  .verdict-card { flex-direction: column; text-align: center; }
+  .verdict-row, .verdict-actions { justify-content: center; }
+  .profile-card { flex-direction: column; text-align: center; }
+  .profile-right { text-align: center; }
+  #search-form { flex-direction: column; }
+  .stat-grid { grid-template-columns: 1fr; }
 }
 
-function recencyWeight(unixSeconds) {
-  if (!unixSeconds) return 0.5;
-  const daysAgo = (Date.now() / 1000 - unixSeconds) / 86400;
-  return Math.max(0.35, 1 - daysAgo / 45);
-}
-
-function keywordSentiment(text) {
-  const pos = ["surge","beat","gain","growth","record","upgrade","strong","rally","profit","jump","outperform","raise"];
-  const neg = ["miss","fall","drop","loss","downgrade","weak","plunge","decline","cut","lawsuit","probe","warn"];
-  let s = 0;
-  const t = text.toLowerCase();
-  for (const w of pos) if (t.includes(w)) s++;
-  for (const w of neg) if (t.includes(w)) s--;
-  return s === 0 ? null : s > 0 ? 1 : -1;
-}
-
-async function scoreSentiment(newsArray) {
-  let score = 50;
-  const bullish = [], bearish = [];
-  if (!Array.isArray(newsArray) || newsArray.length === 0)
-    return { score, bullish, bearish, method: "no news" };
-
-  const items = newsArray.slice(0, 25);
-  const model = await getSentimentModel();
-  let method = model ? "AI model" : "keyword fallback";
-  let wSum = 0, wTot = 0, counted = 0;
-
-  if (model) {
-    setLoading(true, "AI is reading the news…");
-    for (const item of items) {
-      const text = (item.headline || "").slice(0, 200);
-      if (!text) continue;
-      try {
-        const [res] = await model(text);
-        const dir = res.label === "POSITIVE" ? 1 : -1;
-        const w = recencyWeight(item.datetime);
-        wSum += dir * res.score * w; wTot += w; counted++;
-      } catch { /* skip */ }
-    }
-  } else {
-    for (const item of items) {
-      const dir = keywordSentiment(`${item.headline || ""} ${item.summary || ""}`);
-      if (dir === null) continue;
-      const w = recencyWeight(item.datetime);
-      wSum += dir * w; wTot += w; counted++;
-    }
-  }
-
-  if (counted > 0 && wTot > 0) {
-    const avg = wSum / wTot;
-    score = clamp(50 + avg * 40);
-    if (score > 62) bullish.push(`News tone positive — ${counted} articles (${method})`);
-    else if (score < 38) bearish.push(`News tone negative — ${counted} articles (${method})`);
-  }
-  if (newsArray.length > 60) bullish.push(`Heavy news flow (${newsArray.length}/30d)`);
-
-  return { score: clamp(score), bullish, bearish, method };
-}
-
-/* ============================================================
-   SMART SUMMARY
-   ============================================================ */
-function buildSummary(a) {
-  const s = [];
-  const name = a.name !== a.ticker ? a.name : a.ticker;
-
-  if (a.overall >= 75)      s.push(`${name} scores ${Math.round(a.overall)}/100 — one of the stronger profiles this tool can produce.`);
-  else if (a.overall >= 60) s.push(`${name} scores ${Math.round(a.overall)}/100, a moderately positive overall picture.`);
-  else if (a.overall >= 45) s.push(`${name} scores ${Math.round(a.overall)}/100 — a mixed picture without a clear edge either way.`);
-  else                      s.push(`${name} scores ${Math.round(a.overall)}/100, with warning signs outweighing the positives right now.`);
-
-  const factors = Object.entries(a.scores);
-  factors.sort((x, y) => y[1] - x[1]);
-  const [bestName, bestVal] = factors[0];
-  const [worstName, worstVal] = factors[factors.length - 1];
-  const label = { technical: "technical setup", fundamental: "fundamentals", momentum: "momentum", sentiment: "news sentiment", analyst: "analyst opinion" };
-
-  if (bestVal - worstVal > 25)
-    s.push(`The standout strength is its ${label[bestName]} (${Math.round(bestVal)}), while the weak spot is ${label[worstName]} (${Math.round(worstVal)}) — that disagreement is why confidence sits at ${Math.round(a.confidence)}%.`);
-  else
-    s.push(`The five factors broadly agree, led by ${label[bestName]} at ${Math.round(bestVal)}.`);
-
-  if (a.bullish.length) s.push(`On the plus side: ${a.bullish[0].toLowerCase()}${a.bullish[1] ? ", and " + a.bullish[1].toLowerCase() : ""}.`);
-  if (a.bearish.length) s.push(`On the caution side: ${a.bearish[0].toLowerCase()}${a.bearish[1] ? ", and " + a.bearish[1].toLowerCase() : ""}.`);
-
-  if (a.risk === "High" || a.risk === "Elevated") s.push(`Risk is rated ${a.risk.toLowerCase()}, so swings in both directions should be expected.`);
-  else if (a.risk === "Low") s.push(`Risk is rated low, suggesting comparatively calm price behavior.`);
-
-  s.push(`As always, a score is a snapshot — check what's driving the numbers before acting on them.`);
-  return s.join(" ");
-}
-
-/* ============================================================
-   ORCHESTRATION
-   ============================================================ */
-async function analyze(ticker) {
-  setLoading(true, "Fetching price history…");
-  const { rows, source: priceSource } = await fetchPriceHistory(ticker);
-
-  setLoading(true, "Fetching fundamentals, analyst, earnings & news…");
-  const [profile, quote, metrics, recs, news, earnings] = await Promise.allSettled([
-    fetchProfile(ticker), fetchQuote(ticker), fetchMetrics(ticker),
-    fetchRecommendations(ticker), fetchNews(ticker), fetchEarnings(ticker),
-  ]);
-  const val = (r) => (r.status === "fulfilled" ? r.value : null);
-  const profileD = val(profile), quoteD = val(quote), metricsD = val(metrics);
-  const recsD = val(recs), newsD = val(news), earningsD = val(earnings);
-
-  const price = quoteD && quoteD.c ? quoteD.c : rows[rows.length - 1].close;
-
-  setLoading(true, "Crunching the numbers…");
-  const tech = scoreTechnical(rows);
-  const mom = scoreMomentum(rows);
-  const fund = scoreFundamental(metricsD, profileD, price, earningsD);
-  const analyst = scoreAnalyst(recsD);
-  const sentiment = await scoreSentiment(newsD);
-
-  const overall =
-    0.25 * tech.score + 0.25 * fund.score + 0.20 * mom.score +
-    0.15 * sentiment.score + 0.15 * analyst.score;
-
-  const scores = [tech.score, fund.score, mom.score, sentiment.score, analyst.score];
-  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
-  const std = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length);
-  let confidence = clamp(100 - std * 1.5);
-  const sources = [priceSource];
-  if (metricsD?.metric) sources.push("Finnhub fundamentals");
-  if (recsD?.length) sources.push("Finnhub analyst");
-  if (newsD?.length) sources.push(`Finnhub news (${sentiment.method})`);
-  if (Array.isArray(earningsD) && earningsD.length) sources.push("Finnhub earnings");
-  confidence = clamp(confidence * (0.6 + 0.1 * Math.min(sources.length, 4)));
-
-  const beta = metricsD?.metric?.beta;
-  let riskPoints = 0;
-  if (beta != null) riskPoints += beta > 1.5 ? 2 : beta > 1.1 ? 1 : beta < 0.8 ? -1 : 0;
-  if (mom.vol != null) riskPoints += mom.vol > 50 ? 2 : mom.vol > 32 ? 1 : mom.vol < 18 ? -1 : 0;
-  if (mom.drawdown > 35) riskPoints += 1;
-  const risk = riskPoints >= 3 ? "High" : riskPoints <= -1 ? "Low" : riskPoints >= 1 ? "Elevated" : "Medium";
-
-  let recommendation = "HOLD";
-  if (overall >= 70) recommendation = "BUY";
-  else if (overall < 45) recommendation = "SELL";
-
-  return {
-    rows,
-    ticker: ticker.toUpperCase(),
-    name: profileD?.name || ticker.toUpperCase(),
-    price, overall, confidence, risk, recommendation,
-    scores: {
-      technical: tech.score, fundamental: fund.score, momentum: mom.score,
-      sentiment: sentiment.score, analyst: analyst.score,
-    },
-    analystRating: analyst.rating,
-    metrics: fund.metrics,
-    bullish: [...tech.bullish, ...fund.bullish, ...mom.bullish, ...sentiment.bullish, ...analyst.bullish],
-    bearish: [...tech.bearish, ...fund.bearish, ...mom.bearish, ...sentiment.bearish, ...analyst.bearish],
-    explanation: `${tech.detail} | ${fund.detail} | 1M: ${mom.r1m.toFixed(1)}%, Vol: ${mom.vol ? mom.vol.toFixed(0) + "%" : "N/A"}, MaxDD: -${mom.drawdown.toFixed(0)}% | Sentiment: ${sentiment.score.toFixed(0)}/100 | Analyst: ${analyst.rating}`,
-    sources,
-  };
-}
-
-/* ============================================================
-   PRICE CHART
-   ============================================================ */
-function smaArray(values, period) {
-  const out = new Array(values.length).fill(null);
-  let sum = 0;
-  for (let i = 0; i < values.length; i++) {
-    sum += values[i];
-    if (i >= period) sum -= values[i - period];
-    if (i >= period - 1) out[i] = sum / period;
-  }
-  return out;
-}
-
-function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function drawChart(rows) {
-  const canvas = document.getElementById("price-chart");
-  if (!canvas || !rows || rows.length < 30) return;
-
-  const data = rows.slice(-252);
-  const closes = data.map((r) => r.close);
-  const ma20 = smaArray(closes, 20);
-  const ma50 = smaArray(closes, 50);
-
-  const dpr = window.devicePixelRatio || 1;
-  const cssWidth = canvas.clientWidth || canvas.parentElement.clientWidth || 700;
-  const cssHeight = 220;
-  canvas.width = cssWidth * dpr;
-  canvas.height = cssHeight * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, cssWidth, cssHeight);
-
-  const pad = { top: 10, right: 8, bottom: 22, left: 48 };
-  const W = cssWidth - pad.left - pad.right;
-  const H = cssHeight - pad.top - pad.bottom;
-
-  const min = Math.min(...closes) * 0.98;
-  const max = Math.max(...closes) * 1.02;
-  const x = (i) => pad.left + (i / (closes.length - 1)) * W;
-  const y = (v) => pad.top + (1 - (v - min) / (max - min)) * H;
-
-  const textColor = cssVar("--text-muted") || "#888";
-  const gridColor = cssVar("--border") || "#ddd";
-  const priceColor = cssVar("--accent") || "#10b981";
-  const ma20Color = cssVar("--amber") || "#d97706";
-  const ma50Color = cssVar("--red") || "#dc2626";
-
-  ctx.font = "10px ui-monospace, monospace";
-  ctx.fillStyle = textColor;
-  ctx.strokeStyle = gridColor;
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 3; g++) {
-    const v = min + ((max - min) * g) / 3;
-    const gy = y(v);
-    ctx.beginPath();
-    ctx.moveTo(pad.left, gy);
-    ctx.lineTo(pad.left + W, gy);
-    ctx.stroke();
-    ctx.fillText("$" + v.toFixed(v > 100 ? 0 : 2), 4, gy + 3);
-  }
-
-  const dateLabel = (i) => data[i].date.slice(5);
-  ctx.fillText(dateLabel(0), pad.left, cssHeight - 6);
-  ctx.fillText(dateLabel(Math.floor(data.length / 2)), pad.left + W / 2 - 14, cssHeight - 6);
-  ctx.fillText(dateLabel(data.length - 1), pad.left + W - 32, cssHeight - 6);
-
-  function drawLine(series, color, width) {
-    ctx.beginPath();
-    let started = false;
-    for (let i = 0; i < series.length; i++) {
-      if (series[i] == null) continue;
-      const px = x(i), py = y(series[i]);
-      if (!started) { ctx.moveTo(px, py); started = true; }
-      else ctx.lineTo(px, py);
-    }
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.stroke();
-  }
-
-  ctx.beginPath();
-  ctx.moveTo(x(0), y(closes[0]));
-  for (let i = 1; i < closes.length; i++) ctx.lineTo(x(i), y(closes[i]));
-  ctx.lineTo(x(closes.length - 1), pad.top + H);
-  ctx.lineTo(x(0), pad.top + H);
-  ctx.closePath();
-  const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + H);
-  grad.addColorStop(0, priceColor + "33");
-  grad.addColorStop(1, priceColor + "00");
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  drawLine(ma50, ma50Color, 1.3);
-  drawLine(ma20, ma20Color, 1.3);
-  drawLine(closes, priceColor, 2);
-}
-
-/* ============================================================
-   RENDERING
-   ============================================================ */
-function barClass(s) { return s >= 65 ? "high" : s >= 45 ? "mid" : "low"; }
-
-function fillScore(numId, barId, score) {
-  document.getElementById(numId).textContent = Math.round(score);
-  const bar = document.getElementById(barId);
-  bar.className = "score-fill " + barClass(score);
-  requestAnimationFrame(() => { bar.style.width = clamp(score) + "%"; });
-}
-
-function fillList(listId, items, emptyMsg) {
-  const ul = document.getElementById(listId);
-  ul.innerHTML = "";
-  if (!items.length) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = emptyMsg;
-    ul.appendChild(li);
-    return;
-  }
-  for (const it of items) {
-    const li = document.createElement("li");
-    li.textContent = it;
-    ul.appendChild(li);
-  }
-}
-
-function fmtMarketCap(millions) {
-  if (!millions) return "—";
-  if (millions >= 1e6) return "$" + (millions / 1e6).toFixed(2) + "T";
-  if (millions >= 1e3) return "$" + (millions / 1e3).toFixed(1) + "B";
-  return "$" + millions.toFixed(0) + "M";
-}
-
-function renderRange(a) {
-  const mk = a.metrics || {};
-  const low = mk.wkLow, high = mk.wkHigh, price = a.price;
-  const rangeFill = document.getElementById("range-fill");
-  const marker = document.getElementById("range-marker");
-  if (low && high && high > low && price) {
-    const pct = clamp(((price - low) / (high - low)) * 100);
-    rangeFill.style.width = pct + "%";
-    marker.style.left = pct + "%";
-    document.getElementById("range-pct").textContent = pct.toFixed(0) + "% of range";
-    document.getElementById("range-low").textContent = "$" + low.toFixed(2);
-    document.getElementById("range-high").textContent = "$" + high.toFixed(2);
-  } else {
-    rangeFill.style.width = "0%";
-    marker.style.left = "0%";
-    document.getElementById("range-pct").textContent = "—";
-    document.getElementById("range-low").textContent = "—";
-    document.getElementById("range-high").textContent = "—";
-  }
-}
-
-function renderMetrics(a) {
-  const m = a.metrics || {};
-  document.getElementById("m-pe").textContent = m.pe != null ? m.pe.toFixed(1) : "—";
-  document.getElementById("m-mcap").textContent = fmtMarketCap(m.marketCap);
-  document.getElementById("m-beta").textContent = m.beta != null ? m.beta.toFixed(2) : "—";
-  document.getElementById("m-div").textContent = m.divYield != null ? m.divYield.toFixed(2) + "%" : "—";
-  document.getElementById("m-sector").textContent = m.sector || "—";
-}
-
-function render(a) {
-  document.getElementById("result-ticker").textContent = a.ticker;
-  document.getElementById("result-name").textContent = a.name;
-  document.getElementById("result-updated").textContent = "Updated: " + new Date().toLocaleString();
-  document.getElementById("overall-value").textContent = Math.round(a.overall);
-
-  const badge = document.getElementById("recommendation-badge");
-  badge.textContent = a.recommendation;
-  badge.className = "recommendation-badge " + a.recommendation.toLowerCase();
-
-  document.getElementById("confidence-value").textContent = Math.round(a.confidence) + "%";
-  document.getElementById("risk-value").textContent = a.risk;
-  document.getElementById("price-value").textContent = a.price != null ? "$" + a.price.toFixed(2) : "—";
-  document.getElementById("target-value").textContent = a.analystRating !== "N/A" ? a.analystRating : "—";
-
-  drawChart(a.rows);
-  renderRange(a);
-  renderMetrics(a);
-
-  fillScore("technical-num", "technical-bar", a.scores.technical);
-  fillScore("fundamental-num", "fundamental-bar", a.scores.fundamental);
-  fillScore("momentum-num", "momentum-bar", a.scores.momentum);
-  fillScore("sentiment-num", "sentiment-bar", a.scores.sentiment);
-  fillScore("analyst-num", "analyst-bar", a.scores.analyst);
-
-  const summaryEl = document.getElementById("summary-text");
-  if (summaryEl) summaryEl.textContent = buildSummary(a);
-
-  fillList("bullish-list", a.bullish, "No notable bullish signals.");
-  fillList("bearish-list", a.bearish, "No notable bearish signals.");
-
-  document.getElementById("explanation-text").textContent = a.explanation;
-  document.getElementById("sources-value").textContent = a.sources.join(", ");
-
-  setLoading(false);
-  show(resultsEl);
-}
-
-/* ============================================================
-   EVENTS
-   ============================================================ */
-form.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  hide(suggestionsEl);
-  const ticker = input.value.trim().toUpperCase();
-  if (!ticker) return;
-
-  if (!FINNHUB_KEY || FINNHUB_KEY === "YOUR_FINNHUB_KEY") {
-    showError("Add your free Finnhub API key in script.js (FINNHUB_KEY).");
-    return;
-  }
-  try {
-    render(await analyze(ticker));
-  } catch (err) {
-    console.error(err);
-    showError(err.message || "Analysis failed. Try another ticker.");
-  }
-});
-
-// Redraw chart on window resize (keeps it crisp)
-let resizeTimer = null;
-window.addEventListener("resize", () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    if (!resultsEl.classList.contains("hidden") && window.lastRows) drawChart(window.lastRows);
-  }, 200);
-});
-
-/* ============================================================
-   AUTOCOMPLETE
-   ============================================================ */
-let suggestTimer = null;
-let lastQuery = "";
-
-input.addEventListener("input", () => {
-  const q = input.value.trim();
-  clearTimeout(suggestTimer);
-  if (q.length < 2) { hide(suggestionsEl); return; }
-  suggestTimer = setTimeout(() => fetchSuggestions(q), 300);
-});
-
-async function fetchSuggestions(q) {
-  if (q === lastQuery) return;
-  lastQuery = q;
-  try {
-    const data = await finnhub("/search", { q });
-    const results = (data.result || [])
-      .filter((r) => r.type === "Common Stock" && !r.symbol.includes(".") && !r.symbol.includes(":"))
-      .slice(0, 6);
-    renderSuggestions(results);
-  } catch (e) {
-    console.warn("Suggestion fetch failed:", e.message);
-    hide(suggestionsEl);
-  }
-}
-
-function renderSuggestions(results) {
-  suggestionsEl.innerHTML = "";
-  if (!results.length) { hide(suggestionsEl); return; }
-  for (const r of results) {
-    const div = document.createElement("div");
-    div.className = "suggestion-item";
-    div.innerHTML = `<span class="suggestion-symbol"></span><span class="suggestion-name"></span>`;
-    div.querySelector(".suggestion-symbol").textContent = r.symbol;
-    div.querySelector(".suggestion-name").textContent = r.description;
-    div.addEventListener("click", () => {
-      input.value = r.symbol;
-      hide(suggestionsEl);
-      form.requestSubmit();
-    });
-    suggestionsEl.appendChild(div);
-  }
-  show(suggestionsEl);
-}
-
-document.addEventListener("click", (e) => {
-  if (!suggestionsEl.contains(e.target) && e.target !== input) hide(suggestionsEl);
-});
-
-/* ============================================================
-   THEME TOGGLE
-   ============================================================ */
-const themeBtn = document.getElementById("theme-toggle");
-if (themeBtn) {
-  const saved = localStorage.getItem("theme");
-  if (saved) document.documentElement.dataset.theme = saved;
-  themeBtn.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("theme", next);
-    // Redraw chart so its colors match the new theme
-    if (window.lastRows) drawChart(window.lastRows);
-  });
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }
