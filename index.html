@@ -3,189 +3,227 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Stock Analyzer</title>
+  <title>MarketLens — 5-Factor Stock Analysis</title>
+  <meta name="description" content="Multi-factor stock analysis: technical, fundamental, momentum, sentiment and analyst scores with charts, watchlist and compare mode." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app">
 
-    <!-- Theme toggle -->
-    <button id="theme-toggle" class="theme-toggle" title="Toggle light/dark">🌓</button>
+  <!-- ============ HEADER ============ -->
+  <header class="site-header">
+    <div class="brand">
+      <div class="brand-mark">ML</div>
+      <div class="brand-text">
+        <span class="brand-name">MarketLens</span>
+        <span class="brand-sub">5-factor stock analysis</span>
+      </div>
+    </div>
 
-    <!-- ===== HEADER ===== -->
-    <header class="header">
-      <h1 class="logo">📈 Stock Analyzer</h1>
-      <p class="tagline">Multi-factor analysis: technical, fundamental, momentum, sentiment &amp; analyst signals</p>
-    </header>
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="analyze">Analyze</button>
+      <button class="tab-btn" data-tab="compare">Compare</button>
+      <button class="tab-btn" data-tab="watchlist">
+        Watchlist <span class="badge" id="watch-count">0</span>
+      </button>
+    </nav>
 
-    <!-- ===== SEARCH ===== -->
-    <section class="search-section">
-      <form id="search-form" class="search-form">
-        <input
-          type="text"
-          id="ticker-input"
-          class="ticker-input"
-          placeholder="Enter a ticker (e.g. AAPL, MSFT, NVDA)"
-          autocomplete="off"
-          maxlength="10"
-        />
-        <button type="submit" id="analyze-btn" class="analyze-btn">Analyze</button>
-      </form>
-      <div id="suggestions" class="suggestions hidden"></div>
-      <p class="hint">Tip: try AAPL, MSFT, GOOGL, TSLA, or NVDA</p>
-    </section>
+    <button id="theme-toggle" class="theme-toggle-btn" title="Toggle theme (T)">
+      <span class="theme-icon">◐</span>
+    </button>
+  </header>
 
-    <!-- ===== LOADING ===== -->
-    <section id="loading" class="loading hidden">
-      <div class="spinner"></div>
-      <p id="loading-text">Fetching data and crunching the numbers…</p>
-    </section>
+  <main>
 
-    <!-- ===== ERROR ===== -->
-    <section id="error" class="error hidden">
-      <p id="error-text">Something went wrong.</p>
-    </section>
+    <!-- ============ TAB: ANALYZE ============ -->
+    <section id="tab-analyze" class="tab-panel active">
 
-    <!-- ===== RESULTS ===== -->
-    <section id="results" class="results hidden">
+      <div class="search-section">
+        <h1 class="hero-title">Analyze any stock in seconds</h1>
+        <p class="hero-sub">Technical · Fundamental · Momentum · Sentiment · Analyst</p>
 
-      <!-- Summary card -->
-      <div class="summary-card">
-        <div class="summary-left">
-          <h2 id="result-ticker" class="result-ticker">AAPL</h2>
-          <p id="result-name" class="result-name">Apple Inc.</p>
-          <span id="result-updated" class="result-updated">Updated: —</span>
+        <form id="search-form" autocomplete="off">
+          <input id="ticker-input" type="text" placeholder="Enter a ticker, e.g. AAPL  ( press / to focus )" spellcheck="false" />
+          <button type="submit" class="btn btn-primary">Analyze</button>
+        </form>
+        <div id="suggestions" class="suggestions hidden"></div>
+
+        <div class="quick-chips" id="quick-chips">
+          <button class="chip" data-sym="AAPL">AAPL</button>
+          <button class="chip" data-sym="MSFT">MSFT</button>
+          <button class="chip" data-sym="NVDA">NVDA</button>
+          <button class="chip" data-sym="TSLA">TSLA</button>
+          <button class="chip" data-sym="V">V</button>
+          <button class="chip" data-sym="NVO">NVO</button>
+          <button class="chip" data-sym="SOFI">SOFI</button>
         </div>
-        <div class="summary-right">
-          <div class="overall-score">
-            <span class="overall-label">Overall Score</span>
-            <span id="overall-value" class="overall-value">0</span>
-            <span class="overall-max">/100</span>
+
+        <div id="history-strip" class="history-strip hidden">
+          <span class="history-label">Recent:</span>
+          <span id="history-items"></span>
+        </div>
+      </div>
+
+      <div id="status" class="status hidden"></div>
+
+      <!-- ============ RESULTS ============ -->
+      <div id="results" class="results hidden">
+
+        <!-- Profile + price -->
+        <div class="card profile-card">
+          <div class="profile-left">
+            <img id="p-logo" class="p-logo hidden" alt="" />
+            <div>
+              <div class="p-name-row">
+                <h2 id="p-name">—</h2>
+                <span id="p-symbol" class="p-symbol mono">—</span>
+              </div>
+              <div class="p-meta">
+                <span id="p-exchange">—</span>
+                <span class="dot">·</span>
+                <span id="p-industry">—</span>
+                <span class="dot">·</span>
+                <span>Mkt cap <b id="p-mcap" class="mono">—</b></span>
+              </div>
+            </div>
           </div>
-          <div id="recommendation-badge" class="recommendation-badge">HOLD</div>
-        </div>
-      </div>
-
-      <!-- Price chart -->
-      <div class="chart-card">
-        <div class="chart-head">
-          <h3 class="chart-title">1-Year Price</h3>
-          <div class="chart-legend">
-            <span class="legend-item"><span class="legend-dot dot-price"></span>Price</span>
-            <span class="legend-item"><span class="legend-dot dot-ma20"></span>MA20</span>
-            <span class="legend-item"><span class="legend-dot dot-ma50"></span>MA50</span>
+          <div class="profile-right">
+            <div id="p-price" class="p-price mono">—</div>
+            <div id="p-change" class="p-change mono">—</div>
           </div>
         </div>
-        <canvas id="price-chart" height="220"></canvas>
-      </div>
 
-      <!-- Key stats row -->
-      <div class="stats-row">
-        <div class="stat-box">
-          <span class="stat-label">Confidence</span>
-          <span id="confidence-value" class="stat-value">—</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-label">Risk Level</span>
-          <span id="risk-value" class="stat-value">—</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-label">Current Price</span>
-          <span id="price-value" class="stat-value">—</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-label">Analyst View</span>
-          <span id="target-value" class="stat-value">—</span>
-        </div>
-      </div>
+        <!-- Verdict / score -->
+        <div class="card verdict-card">
+          <div class="gauge-wrap">
+            <svg id="gauge-svg" viewBox="0 0 120 120">
+              <circle class="gauge-track" cx="60" cy="60" r="52" />
+              <circle id="gauge-arc" class="gauge-arc" cx="60" cy="60" r="52" />
+            </svg>
+            <div class="gauge-center">
+              <div id="score-value" class="score-value mono">—</div>
+              <div class="score-label">/ 100</div>
+            </div>
+          </div>
 
-      <!-- 52-week range bar -->
-      <div class="range-card">
-        <div class="range-head">
-          <span class="range-label">52-Week Range</span>
-          <span id="range-pct" class="range-pct">—</span>
+          <div class="verdict-main">
+            <div class="verdict-row">
+              <span id="verdict-badge" class="verdict-badge">—</span>
+              <span id="confidence" class="confidence">—</span>
+            </div>
+            <h3 class="summary-heading">💡 Summary</h3>
+            <p id="summary-text">Run an analysis to see the summary.</p>
+            <div class="verdict-actions">
+              <button id="btn-watch" class="btn btn-ghost">☆ Add to watchlist</button>
+              <button id="btn-copy" class="btn btn-ghost">Copy summary</button>
+              <button id="btn-export" class="btn btn-ghost">Export JSON</button>
+            </div>
+          </div>
         </div>
-        <div class="range-track">
-          <div id="range-fill" class="range-fill"></div>
-          <div id="range-marker" class="range-marker"></div>
-        </div>
-        <div class="range-ends">
-          <span id="range-low">—</span>
-          <span id="range-high">—</span>
-        </div>
-      </div>
 
-      <!-- Key metrics strip -->
-      <div class="metrics-row">
-        <div class="metric-box"><span class="metric-label">P/E</span><span id="m-pe" class="metric-value">—</span></div>
-        <div class="metric-box"><span class="metric-label">Market Cap</span><span id="m-mcap" class="metric-value">—</span></div>
-        <div class="metric-box"><span class="metric-label">Beta</span><span id="m-beta" class="metric-value">—</span></div>
-        <div class="metric-box"><span class="metric-label">Div Yield</span><span id="m-div" class="metric-value">—</span></div>
-        <div class="metric-box"><span class="metric-label">Sector</span><span id="m-sector" class="metric-value">—</span></div>
-      </div>
+        <!-- Factor scores -->
+        <h3 class="section-title">Factor breakdown</h3>
+        <div id="factor-grid" class="factor-grid"></div>
 
-      <!-- Sub-scores -->
-      <div class="scores-grid">
-        <div class="score-card">
-          <div class="score-card-head"><span class="score-name">Technical</span><span id="technical-num" class="score-num">0</span></div>
-          <div class="score-bar"><div id="technical-bar" class="score-fill"></div></div>
-        </div>
-        <div class="score-card">
-          <div class="score-card-head"><span class="score-name">Fundamental</span><span id="fundamental-num" class="score-num">0</span></div>
-          <div class="score-bar"><div id="fundamental-bar" class="score-fill"></div></div>
-        </div>
-        <div class="score-card">
-          <div class="score-card-head"><span class="score-name">Momentum</span><span id="momentum-num" class="score-num">0</span></div>
-          <div class="score-bar"><div id="momentum-bar" class="score-fill"></div></div>
-        </div>
-        <div class="score-card">
-          <div class="score-card-head"><span class="score-name">Sentiment</span><span id="sentiment-num" class="score-num">0</span></div>
-          <div class="score-bar"><div id="sentiment-bar" class="score-fill"></div></div>
-        </div>
-        <div class="score-card">
-          <div class="score-card-head"><span class="score-name">Analyst</span><span id="analyst-num" class="score-num">0</span></div>
-          <div class="score-bar"><div id="analyst-bar" class="score-fill"></div></div>
-        </div>
-      </div>
+        <!-- Chart -->
+        <div class="card chart-card">
+          <div class="chart-head">
+            <h3>Price — 1 year</h3>
+            <div class="chart-legend">
+              <span class="lg lg-price">Price</span>
+              <span class="lg lg-ma20">MA20</span>
+              <span class="lg lg-ma50">MA50</span>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="price-chart"></canvas>
+            <div id="chart-tip" class="chart-tip hidden"></div>
+          </div>
 
-      <!-- Summary -->
-      <div class="explanation-card">
-        <h3 class="explanation-title">💡 Summary</h3>
-        <p id="summary-text" class="summary-text">—</p>
-      </div>
+          <div class="range-row">
+            <span class="range-cap mono" id="range-low">—</span>
+            <div class="range-bar"><div id="range-marker" class="range-marker"></div></div>
+            <span class="range-cap mono" id="range-high">—</span>
+          </div>
+          <div class="range-title">52-week range</div>
 
-      <!-- Factors -->
-      <div class="factors-grid">
-        <div class="factors-card bullish">
-          <h3 class="factors-title">🟢 Bullish Factors</h3>
-          <ul id="bullish-list" class="factors-list"></ul>
+          <div id="metric-strip" class="metric-strip"></div>
         </div>
-        <div class="factors-card bearish">
-          <h3 class="factors-title">🔴 Bearish Factors</h3>
-          <ul id="bearish-list" class="factors-list"></ul>
+
+        <!-- Fundamentals + Technicals -->
+        <div class="two-col">
+          <div class="card">
+            <h3 class="card-title">Fundamentals</h3>
+            <div id="fundamentals-grid" class="stat-grid"></div>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Technical indicators</h3>
+            <div id="technicals-grid" class="stat-grid"></div>
+          </div>
         </div>
-      </div>
 
-      <!-- Analysis details -->
-      <div class="explanation-card">
-        <h3 class="explanation-title">Analysis Details</h3>
-        <p id="explanation-text" class="explanation-text">—</p>
-      </div>
+        <!-- Analyst + Risk -->
+        <div class="two-col">
+          <div class="card">
+            <h3 class="card-title">Analyst recommendations</h3>
+            <div id="analyst-bars" class="analyst-bars"></div>
+            <p id="analyst-note" class="muted small"></p>
+          </div>
+          <div class="card">
+            <h3 class="card-title">Risk meter</h3>
+            <div class="risk-track"><div id="risk-fill" class="risk-fill"></div></div>
+            <div class="risk-scale">
+              <span>Low</span><span>Medium</span><span>High</span>
+            </div>
+            <p id="risk-label" class="muted small"></p>
+          </div>
+        </div>
 
-      <!-- Sources -->
-      <div class="sources-line">
-        <span class="sources-label">Data sources:</span>
-        <span id="sources-value">—</span>
-      </div>
+        <!-- News -->
+        <div class="card">
+          <h3 class="card-title">Recent news & sentiment</h3>
+          <ul id="news-list" class="news-list"></ul>
+        </div>
 
+      </div><!-- /results -->
     </section>
 
-    <!-- ===== FOOTER ===== -->
-    <footer class="footer">
-      <p>For informational and educational purposes only. Not financial advice.</p>
-    </footer>
+    <!-- ============ TAB: COMPARE ============ -->
+    <section id="tab-compare" class="tab-panel">
+      <div class="search-section">
+        <h1 class="hero-title">Compare stocks side by side</h1>
+        <p class="hero-sub">Enter 2 or 3 tickers</p>
+        <form id="compare-form" class="compare-form" autocomplete="off">
+          <input id="cmp-1" class="cmp-input mono" type="text" placeholder="AAPL" spellcheck="false" />
+          <span class="vs">vs</span>
+          <input id="cmp-2" class="cmp-input mono" type="text" placeholder="MSFT" spellcheck="false" />
+          <span class="vs">vs</span>
+          <input id="cmp-3" class="cmp-input mono" type="text" placeholder="(optional)" spellcheck="false" />
+          <button type="submit" class="btn btn-primary">Compare</button>
+        </form>
+      </div>
+      <div id="compare-status" class="status hidden"></div>
+      <div id="compare-result" class="compare-result hidden"></div>
+    </section>
 
-  </div>
+    <!-- ============ TAB: WATCHLIST ============ -->
+    <section id="tab-watchlist" class="tab-panel">
+      <div class="search-section">
+        <h1 class="hero-title">Your watchlist</h1>
+        <p class="hero-sub">Saved analyses — click a card to re-analyze with fresh data</p>
+      </div>
+      <p id="watchlist-empty" class="muted center">Nothing saved yet. Analyze a stock and press “☆ Add to watchlist”.</p>
+      <div id="watchlist-grid" class="watchlist-grid"></div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>Educational project — not financial advice. Data: Finnhub & Stooq. Scores are model outputs, always do your own research.</p>
+    <p class="muted small">Shortcuts: <b>/</b> focus search · <b>T</b> theme · <b>Esc</b> close suggestions</p>
+  </footer>
 
   <script src="script.js"></script>
 </body>
