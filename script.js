@@ -1,679 +1,1155 @@
 /* ============================================================
-   MarketLens — styles.css
-   Dark-first fintech theme with light mode.
+   MarketLens — script.js
+   5-factor stock analysis · live data (Finnhub + Stooq)
+   Features: autocomplete, chart, compare, watchlist, history,
+   caching, export, keyboard shortcuts, dark/light theme.
    ============================================================ */
 
-:root {
-  --bg: #0b0f17;
-  --bg-soft: #0f1522;
-  --surface: #141b2b;
-  --surface-2: #1a2338;
-  --border: #24304a;
-  --text: #e8edf7;
-  --text-muted: #8b97b0;
-  --accent: #4fd1a5;         /* main teal-green */
-  --accent-soft: rgba(79, 209, 165, 0.12);
-  --up: #4fd1a5;
-  --down: #f0716f;
-  --warn: #e8b959;
-  --ma20: #6ea8fe;
-  --ma50: #c78bfa;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-  --radius: 16px;
-  --radius-sm: 12px;
-  --display: "Space Grotesk", system-ui, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, monospace;
-  --body: system-ui, -apple-system, "Segoe UI", sans-serif;
+/* ---------------- CONFIG — EDIT THIS ---------------- */
+const FINNHUB_KEY = "d978kb1r01qluk1jllpgd978kb1r01qluk1jllq0"; // <<< paste your Finnhub API key between the quotes
+const CACHE_MINUTES = 15;                    // how long an analysis stays cached
+/* ----------------------------------------------------- */
+
+const DEMO_MODE = !FINNHUB_KEY || FINNHUB_KEY === "d978kb1r01qluk1jllpgd978kb1r01qluk1jllq0";
+
+/* ============================================================
+   DOM SHORTCUTS
+   ============================================================ */
+const $ = (id) => document.getElementById(id);
+
+const input = $("ticker-input");
+const suggestionsEl = $("suggestions");
+const statusEl = $("status");
+const resultsEl = $("results");
+
+function show(el) { el.classList.remove("hidden"); }
+function hide(el) { el.classList.add("hidden"); }
+
+function setStatus(msg, kind = "loading") {
+  statusEl.textContent = msg;
+  statusEl.className = "status " + kind;
+  show(statusEl);
+}
+function clearStatus() { hide(statusEl); }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
 }
 
-[data-theme="light"] {
-  --bg: #f5f7fb;
-  --bg-soft: #eef1f7;
-  --surface: #ffffff;
-  --surface-2: #f2f5fa;
-  --border: #dfe5f0;
-  --text: #17203a;
-  --text-muted: #5d6a85;
-  --accent: #0e9f76;
-  --accent-soft: rgba(14, 159, 118, 0.10);
-  --up: #0e9f76;
-  --down: #d5504e;
-  --shadow: 0 10px 24px rgba(23, 32, 58, 0.08);
+/* ============================================================
+   FORMATTERS
+   ============================================================ */
+function fmtNum(n, d = 2) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+function fmtPct(n, d = 1) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return (n >= 0 ? "+" : "") + Number(n).toFixed(d) + "%";
+}
+function fmtCap(millions) {
+  if (!millions || isNaN(millions)) return "—";
+  if (millions >= 1e6) return "$" + (millions / 1e6).toFixed(2) + "T";
+  if (millions >= 1e3) return "$" + (millions / 1e3).toFixed(1) + "B";
+  return "$" + millions.toFixed(0) + "M";
+}
+function fmtDate(ts) {
+  return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* ============================================================
+   THEME
+   ============================================================ */
+(function initTheme() {
+  const saved = localStorage.getItem("theme");
+  const prefersLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+  document.documentElement.dataset.theme = saved || (prefersLight ? "light" : "dark");
+})();
 
-html { scroll-behavior: smooth; }
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("theme", next);
+  if (window.lastRows) drawChart(window.lastRows); // redraw chart in new colors
+}
+$("theme-toggle").addEventListener("click", toggleTheme);
 
-body {
-  font-family: var(--body);
-  background: var(--bg);
-  color: var(--text);
-  min-height: 100vh;
-  transition: background 250ms, color 250ms;
+/* ============================================================
+   TABS
+   ============================================================ */
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "watchlist") renderWatchlist();
+  });
+});
+
+/* ============================================================
+   STORAGE HELPERS (watchlist · history · cache)
+   ============================================================ */
+function loadJSON(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
+  catch { return fallback; }
+}
+function saveJSON(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
 }
 
-.mono { font-family: var(--mono); }
-.muted { color: var(--text-muted); }
-.small { font-size: 0.82rem; }
-.center { text-align: center; }
-.hidden { display: none !important; }
+function getWatchlist() { return loadJSON("ml_watchlist", []); }
+function setWatchlist(w) { saveJSON("ml_watchlist", w); updateWatchCount(); }
+function updateWatchCount() { $("watch-count").textContent = getWatchlist().length; }
 
-/* ---------- Header ---------- */
-.site-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(10px);
-  z-index: 50;
+function getHistory() { return loadJSON("ml_history", []); }
+function pushHistory(sym) {
+  let h = getHistory().filter((s) => s !== sym);
+  h.unshift(sym);
+  h = h.slice(0, 10);
+  saveJSON("ml_history", h);
+  renderHistory();
+}
+function renderHistory() {
+  const h = getHistory();
+  if (!h.length) { hide($("history-strip")); return; }
+  $("history-items").innerHTML = h
+    .map((s) => `<a class="history-item" data-sym="${s}">${s}</a>`)
+    .join("");
+  show($("history-strip"));
+}
+$("history-items").addEventListener("click", (e) => {
+  const sym = e.target.dataset.sym;
+  if (sym) runAnalysis(sym);
+});
+
+function cacheGet(sym) {
+  const c = loadJSON("ml_cache_" + sym, null);
+  if (c && Date.now() - c.t < CACHE_MINUTES * 60 * 1000) return c.data;
+  return null;
+}
+function cacheSet(sym, data) {
+  saveJSON("ml_cache_" + sym, { t: Date.now(), data });
 }
 
-.brand { display: flex; align-items: center; gap: 12px; }
+/* ============================================================
+   DEMO DATA (used when no API key is set, or as a fallback)
+   ============================================================ */
+const DEMO_DB = {
+  AAPL: ["Apple Inc", "NASDAQ", "Consumer Electronics", 3400000, 232],
+  MSFT: ["Microsoft Corp", "NASDAQ", "Software", 3600000, 470],
+  NVDA: ["NVIDIA Corp", "NASDAQ", "Semiconductors", 3900000, 158],
+  TSLA: ["Tesla Inc", "NASDAQ", "Automobiles", 1050000, 330],
+  V:    ["Visa Inc", "NYSE", "Financial Services", 640000, 350],
+  NVO:  ["Novo Nordisk", "NYSE", "Pharmaceuticals", 310000, 70],
+  SOFI: ["SoFi Technologies", "NASDAQ", "Fintech", 18000, 16],
+  CEG:  ["Constellation Energy", "NASDAQ", "Utilities", 95000, 300],
+  RTX:  ["RTX Corporation", "NYSE", "Aerospace & Defense", 180000, 135],
+  ALAB: ["Astera Labs", "NASDAQ", "Semiconductors", 15000, 90],
+};
 
-.brand-mark {
-  width: 40px; height: 40px;
-  display: grid; place-items: center;
-  border-radius: 12px;
-  background: linear-gradient(135deg, var(--accent), #2b8ea3);
-  color: #06251c;
-  font-family: var(--display);
-  font-weight: 700;
+function hashCode(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-.brand-text { display: flex; flex-direction: column; line-height: 1.15; }
-.brand-name { font-family: var(--display); font-weight: 700; font-size: 1.05rem; }
-.brand-sub { font-size: 0.72rem; color: var(--text-muted); }
+function demoBundle(sym) {
+  const rng = mulberry32(hashCode(sym));
+  const meta = DEMO_DB[sym] || [sym + " Corp", "NYSE", "Diversified", 5000 + rng() * 200000, 20 + rng() * 300];
+  const [name, exchange, industry, mcap, basePrice] = meta;
 
-.tabs { display: flex; gap: 6px; }
+  // price history: 252-day random walk with a per-ticker drift
+  const drift = (rng() - 0.42) * 0.0022;
+  const vol = 0.012 + rng() * 0.014;
+  const rows = [];
+  let p = basePrice * (0.75 + rng() * 0.3);
+  const today = Date.now();
+  for (let i = 251; i >= 0; i--) {
+    p = Math.max(1, p * (1 + drift + (rng() - 0.5) * 2 * vol));
+    rows.push({ date: new Date(today - i * 86400000), close: p });
+  }
+  const price = rows[rows.length - 1].close;
+  const prev = rows[rows.length - 2].close;
 
-.tab-btn {
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--display);
-  font-size: 0.92rem;
-  padding: 8px 14px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: all 150ms;
-}
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active {
-  color: var(--text);
-  background: var(--surface);
-  border-color: var(--border);
-}
+  const total = 8 + Math.floor(rng() * 25);
+  const sb = Math.floor(rng() * total * 0.4);
+  const b = Math.floor(rng() * (total - sb) * 0.6);
+  const h = Math.floor(rng() * (total - sb - b) * 0.8);
+  const s = Math.floor(rng() * (total - sb - b - h));
+  const ss = total - sb - b - h - s;
 
-.badge {
-  display: inline-block;
-  min-width: 20px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  text-align: center;
-}
+  const headlines = [
+    [`${name} beats quarterly earnings expectations`, "pos"],
+    [`Analysts raise price target on ${sym} after strong growth`, "pos"],
+    [`${name} announces new product expansion plans`, "pos"],
+    [`${name} faces rising competition, margins under watch`, "neg"],
+    [`Market volatility weighs on ${sym} shares`, "neg"],
+    [`${name} schedules next earnings call`, "neu"],
+    [`Institutional investors adjust positions in ${sym}`, "neu"],
+  ];
+  const news = headlines
+    .sort(() => rng() - 0.5)
+    .slice(0, 5)
+    .map((x, i) => ({
+      headline: x[0],
+      url: "#",
+      datetime: (today - i * 86400000 * 2) / 1000,
+      source: ["Reuters", "Bloomberg", "MarketWatch", "CNBC"][Math.floor(rng() * 4)],
+    }));
 
-.theme-toggle-btn {
-  width: 38px; height: 38px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 1.05rem;
-  cursor: pointer;
-  transition: transform 150ms;
-}
-.theme-toggle-btn:hover { transform: rotate(20deg); }
+  const high52 = Math.max(...rows.map((r) => r.close));
+  const low52 = Math.min(...rows.map((r) => r.close));
 
-/* ---------- Layout ---------- */
-main { max-width: 1060px; margin: 0 auto; padding: 32px 20px 60px; }
-
-.tab-panel { display: none; }
-.tab-panel.active { display: block; animation: fadeUp 300ms ease; }
-
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: none; }
-}
-
-/* ---------- Search / hero ---------- */
-.search-section { text-align: center; margin-bottom: 26px; position: relative; }
-
-.hero-title {
-  font-family: var(--display);
-  font-size: clamp(1.5rem, 3.4vw, 2.2rem);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.hero-sub { color: var(--text-muted); margin: 8px 0 22px; font-size: 0.95rem; }
-
-#search-form {
-  display: flex;
-  gap: 10px;
-  justify-content: center;
-  max-width: 560px;
-  margin: 0 auto;
+  return {
+    profile: { name, exchange, finnhubIndustry: industry, marketCapitalization: mcap, logo: "" },
+    quote: { c: price, d: price - prev, dp: ((price - prev) / prev) * 100, pc: prev },
+    metric: {
+      peTTM: 12 + rng() * 45,
+      psTTM: 2 + rng() * 15,
+      roeTTM: 5 + rng() * 35,
+      netProfitMarginTTM: 4 + rng() * 30,
+      grossMarginTTM: 25 + rng() * 50,
+      "totalDebt/totalEquityQuarterly": rng() * 1.6,
+      dividendYieldIndicatedAnnual: rng() < 0.4 ? rng() * 3 : 0,
+      beta: 0.6 + rng() * 1.6,
+      revenueGrowthTTMYoy: -5 + rng() * 40,
+      epsTTM: 1 + rng() * 12,
+      "52WeekHigh": high52,
+      "52WeekLow": low52,
+    },
+    recs: { strongBuy: sb, buy: b, hold: h, sell: s, strongSell: ss },
+    news,
+    rows,
+  };
 }
 
-#ticker-input {
-  flex: 1;
-  padding: 13px 18px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 0.95rem;
-  outline: none;
-  transition: border-color 150ms, box-shadow 150ms;
-}
-#ticker-input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+/* ============================================================
+   DATA LAYER (Finnhub + Stooq)
+   ============================================================ */
+async function finnhub(path, params = {}) {
+  const url = new URL("https://finnhub.io/api/v1" + path);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  url.searchParams.set("token", FINNHUB_KEY);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Finnhub " + res.status);
+  return res.json();
 }
 
-.btn {
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: 12px 20px;
-  font-family: var(--display);
-  font-weight: 600;
-  font-size: 0.92rem;
-  cursor: pointer;
-  transition: transform 120ms, opacity 120ms, background 150ms;
-}
-.btn:active { transform: scale(0.97); }
-
-.btn-primary { background: var(--accent); color: #06251c; }
-.btn-primary:hover { opacity: 0.9; }
-
-.btn-ghost {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 9px 14px;
-  font-size: 0.85rem;
-}
-.btn-ghost:hover { background: var(--surface-2); }
-
-/* ---------- Autocomplete ---------- */
-.suggestions {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  top: 100%;
-  width: 100%;
-  max-width: 560px;
-  margin-top: 8px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-  z-index: 40;
-  text-align: left;
+async function stooqHistory(sym) {
+  // Stooq uses lowercase symbols, dots become dashes, US suffix
+  const s = sym.toLowerCase().replace(/\./g, "-") + ".us";
+  const res = await fetch(`https://stooq.com/q/d/l/?s=${s}&i=d`);
+  if (!res.ok) throw new Error("Stooq " + res.status);
+  const csv = await res.text();
+  const lines = csv.trim().split("\n").slice(1); // drop header
+  const rows = lines
+    .map((l) => {
+      const [date, , , , close] = l.split(",");
+      return { date: new Date(date), close: parseFloat(close) };
+    })
+    .filter((r) => !isNaN(r.close));
+  if (rows.length < 60) throw new Error("Not enough price history");
+  return rows.slice(-252); // ~1 trading year
 }
 
-.suggestion-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 16px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  border-bottom: 1px solid var(--border);
-  transition: background 100ms;
-}
-.suggestion-item:last-child { border-bottom: none; }
-.suggestion-item:hover, .suggestion-item.sel { background: var(--accent-soft); }
-.suggestion-symbol { font-family: var(--mono); font-weight: 700; }
-.suggestion-name {
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+async function fetchBundle(sym) {
+  if (DEMO_MODE) return { ...demoBundle(sym), demo: true };
 
-/* ---------- Chips + history ---------- */
-.quick-chips { margin-top: 16px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  const to = new Date();
+  const from = new Date(Date.now() - 30 * 86400000);
+  const d = (x) => x.toISOString().slice(0, 10);
 
-.chip {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 150ms;
-}
-.chip:hover { color: var(--accent); border-color: var(--accent); }
-
-.history-strip { margin-top: 14px; font-size: 0.82rem; color: var(--text-muted); }
-.history-label { margin-right: 6px; }
-.history-item {
-  font-family: var(--mono);
-  color: var(--accent);
-  cursor: pointer;
-  margin: 0 5px;
-  text-decoration: none;
-}
-.history-item:hover { text-decoration: underline; }
-
-/* ---------- Status ---------- */
-.status {
-  max-width: 560px;
-  margin: 0 auto 24px;
-  padding: 12px 16px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  font-size: 0.9rem;
-  text-align: center;
-}
-.status.error { border-color: var(--down); color: var(--down); }
-.status.loading { color: var(--text-muted); }
-.status.notice { border-color: var(--warn); color: var(--warn); }
-
-/* ---------- Cards ---------- */
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 22px;
-  box-shadow: var(--shadow);
-  margin-bottom: 18px;
+  try {
+    const [profile, quote, metricRes, recsArr, news, rows] = await Promise.all([
+      finnhub("/stock/profile2", { symbol: sym }),
+      finnhub("/quote", { symbol: sym }),
+      finnhub("/stock/metric", { symbol: sym, metric: "all" }),
+      finnhub("/stock/recommendation", { symbol: sym }),
+      finnhub("/company-news", { symbol: sym, from: d(from), to: d(to) }),
+      stooqHistory(sym),
+    ]);
+    if (!quote || !quote.c) throw new Error("No quote — check the ticker");
+    return {
+      profile: profile || {},
+      quote,
+      metric: (metricRes && metricRes.metric) || {},
+      recs: (recsArr && recsArr[0]) || null,
+      news: (news || []).slice(0, 6),
+      rows,
+      demo: false,
+    };
+  } catch (err) {
+    console.warn("Live data failed, using demo fallback:", err);
+    return { ...demoBundle(sym), demo: true, fellBack: true };
+  }
 }
 
-.card-title { font-family: var(--display); font-size: 1rem; margin-bottom: 14px; }
-
-.section-title {
-  font-family: var(--display);
-  font-size: 1rem;
-  margin: 6px 0 12px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: 600;
+/* ============================================================
+   TECHNICAL INDICATORS
+   ============================================================ */
+function sma(values, period) {
+  const out = new Array(values.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
 }
 
-/* ---------- Profile card ---------- */
-.profile-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
-.profile-left { display: flex; align-items: center; gap: 14px; }
-
-.p-logo { width: 46px; height: 46px; border-radius: 10px; background: #fff; object-fit: contain; }
-
-.p-name-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.p-name-row h2 { font-family: var(--display); font-size: 1.25rem; }
-.p-symbol { color: var(--accent); font-weight: 700; }
-
-.p-meta { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
-.p-meta .dot { margin: 0 6px; }
-
-.profile-right { text-align: right; }
-.p-price { font-size: 1.6rem; font-weight: 700; }
-.p-change { font-size: 0.95rem; }
-.p-change.up { color: var(--up); }
-.p-change.down { color: var(--down); }
-
-/* ---------- Verdict card ---------- */
-.verdict-card { display: flex; gap: 26px; align-items: center; flex-wrap: wrap; }
-
-.gauge-wrap { position: relative; width: 150px; height: 150px; flex-shrink: 0; }
-#gauge-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-
-.gauge-track { fill: none; stroke: var(--surface-2); stroke-width: 10; }
-.gauge-arc {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 10;
-  stroke-linecap: round;
-  stroke-dasharray: 326.7;   /* 2πr, r=52 */
-  stroke-dashoffset: 326.7;
-  transition: stroke-dashoffset 900ms ease, stroke 300ms;
+function ema(values, period) {
+  const out = new Array(values.length).fill(null);
+  const k = 2 / (period + 1);
+  let prev = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out[period - 1] = prev;
+  for (let i = period; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
 }
 
-.gauge-center {
-  position: absolute; inset: 0;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-}
-.score-value { font-size: 2rem; font-weight: 700; }
-.score-label { font-size: 0.72rem; color: var(--text-muted); }
-
-.verdict-main { flex: 1; min-width: 260px; }
-.verdict-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-
-.verdict-badge {
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 0.95rem;
-  padding: 6px 16px;
-  border-radius: 999px;
-  letter-spacing: 0.05em;
-}
-.verdict-badge.buy  { background: rgba(79,209,165,0.15); color: var(--up); }
-.verdict-badge.hold { background: rgba(232,185,89,0.15); color: var(--warn); }
-.verdict-badge.sell { background: rgba(240,113,111,0.15); color: var(--down); }
-
-.confidence { font-size: 0.82rem; color: var(--text-muted); }
-
-.summary-heading { font-family: var(--display); font-size: 0.95rem; margin-bottom: 6px; }
-#summary-text { font-size: 0.92rem; line-height: 1.65; color: var(--text); }
-
-.verdict-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
-#btn-watch.active { border-color: var(--accent); color: var(--accent); }
-
-/* ---------- Factor grid ---------- */
-.factor-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 18px;
+function rsi(values, period = 14) {
+  if (values.length <= period) return 50;
+  let gain = 0, loss = 0;
+  for (let i = 1; i <= period; i++) {
+    const ch = values[i] - values[i - 1];
+    if (ch > 0) gain += ch; else loss -= ch;
+  }
+  let avgG = gain / period, avgL = loss / period;
+  for (let i = period + 1; i < values.length; i++) {
+    const ch = values[i] - values[i - 1];
+    avgG = (avgG * (period - 1) + Math.max(ch, 0)) / period;
+    avgL = (avgL * (period - 1) + Math.max(-ch, 0)) / period;
+  }
+  if (avgL === 0) return 100;
+  return 100 - 100 / (1 + avgG / avgL);
 }
 
-.factor-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 14px 16px;
-  cursor: pointer;
-  transition: border-color 150ms;
-}
-.factor-card:hover { border-color: var(--accent); }
-
-.factor-head { display: flex; justify-content: space-between; align-items: baseline; }
-.factor-name { font-size: 0.82rem; color: var(--text-muted); }
-.factor-score { font-family: var(--mono); font-weight: 700; font-size: 1.1rem; }
-
-.factor-bar {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  margin-top: 10px;
-  overflow: hidden;
-}
-.factor-fill {
-  height: 100%;
-  border-radius: 999px;
-  width: 0;
-  transition: width 700ms ease;
+function macd(values) {
+  const e12 = ema(values, 12);
+  const e26 = ema(values, 26);
+  const line = values.map((_, i) =>
+    e12[i] !== null && e26[i] !== null ? e12[i] - e26[i] : null
+  );
+  const valid = line.filter((v) => v !== null);
+  const sig = ema(valid, 9);
+  const macdVal = valid[valid.length - 1];
+  const sigVal = sig[sig.length - 1];
+  return { macd: macdVal, signal: sigVal, hist: macdVal - sigVal };
 }
 
-.factor-why {
-  margin-top: 10px;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  line-height: 1.5;
-  display: none;
-}
-.factor-card.open .factor-why { display: block; }
-.factor-hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 8px; opacity: 0.7; }
-
-/* ---------- Chart ---------- */
-.chart-card { padding-bottom: 16px; }
-.chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
-.chart-head h3 { font-family: var(--display); font-size: 1rem; }
-
-.chart-legend { display: flex; gap: 14px; font-size: 0.75rem; color: var(--text-muted); }
-.lg::before { content: ""; display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
-.lg-price::before { background: var(--accent); }
-.lg-ma20::before { background: var(--ma20); }
-.lg-ma50::before { background: var(--ma50); }
-
-.chart-wrap { position: relative; }
-#price-chart { width: 100%; height: 300px; display: block; }
-
-.chart-tip {
-  position: absolute;
-  pointer-events: none;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  white-space: nowrap;
-  z-index: 5;
+function bollingerPosition(values, period = 20) {
+  const slice = values.slice(-period);
+  const mean = slice.reduce((a, b) => a + b, 0) / period;
+  const sd = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period);
+  if (sd === 0) return 0.5;
+  const last = values[values.length - 1];
+  // 0 = at lower band, 1 = at upper band
+  return (last - (mean - 2 * sd)) / (4 * sd);
 }
 
-.range-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
-.range-cap { font-size: 0.78rem; color: var(--text-muted); }
-.range-bar {
-  flex: 1;
-  height: 8px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--down), var(--warn), var(--up));
-  position: relative;
-}
-.range-marker {
-  position: absolute;
-  top: 50%;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--text);
-  border: 3px solid var(--bg);
-  transform: translate(-50%, -50%);
-  transition: left 700ms ease;
-}
-.range-title { text-align: center; font-size: 0.72rem; color: var(--text-muted); margin-top: 6px; }
-
-.metric-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: 10px;
-  margin-top: 18px;
-}
-.metric-cell {
-  background: var(--surface-2);
-  border-radius: 10px;
-  padding: 10px 12px;
-  text-align: center;
-}
-.metric-cell .k { font-size: 0.68rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-.metric-cell .v { font-family: var(--mono); font-weight: 700; font-size: 0.92rem; margin-top: 4px; }
-
-/* ---------- Two-column + stat grids ---------- */
-.two-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-}
-@media (max-width: 760px) { .two-col { grid-template-columns: 1fr; } }
-
-.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
-
-.stat-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px dashed var(--border);
-  font-size: 0.85rem;
-}
-.stat-row .k { color: var(--text-muted); }
-.stat-row .v { font-family: var(--mono); font-weight: 600; }
-.v.good { color: var(--up); }
-.v.bad { color: var(--down); }
-
-/* ---------- Analyst bars ---------- */
-.analyst-bars { display: flex; flex-direction: column; gap: 10px; }
-.abar { display: grid; grid-template-columns: 92px 1fr 36px; align-items: center; gap: 10px; font-size: 0.8rem; }
-.abar .k { color: var(--text-muted); }
-.abar .track { height: 10px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
-.abar .fill { height: 100%; border-radius: 999px; width: 0; transition: width 700ms ease; }
-.abar .n { font-family: var(--mono); text-align: right; }
-
-/* ---------- Risk ---------- */
-.risk-track {
-  height: 12px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  overflow: hidden;
-  margin: 12px 0 8px;
-}
-.risk-fill {
-  height: 100%;
-  width: 0;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--up), var(--warn), var(--down));
-  transition: width 700ms ease;
-}
-.risk-scale { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 10px; }
-
-/* ---------- News ---------- */
-.news-list { list-style: none; }
-.news-item {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
-}
-.news-item:last-child { border-bottom: none; }
-
-.sent-tag {
-  flex-shrink: 0;
-  font-family: var(--mono);
-  font-size: 0.66rem;
-  padding: 3px 8px;
-  border-radius: 999px;
-  margin-top: 2px;
-}
-.sent-tag.pos { background: rgba(79,209,165,0.15); color: var(--up); }
-.sent-tag.neg { background: rgba(240,113,111,0.15); color: var(--down); }
-.sent-tag.neu { background: var(--surface-2); color: var(--text-muted); }
-
-.news-item a { color: var(--text); text-decoration: none; font-size: 0.88rem; line-height: 1.45; }
-.news-item a:hover { color: var(--accent); }
-.news-meta { font-size: 0.72rem; color: var(--text-muted); margin-top: 3px; }
-
-/* ---------- Compare ---------- */
-.compare-form { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
-.cmp-input {
-  width: 130px;
-  padding: 12px 14px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 0.9rem;
-  text-transform: uppercase;
-  text-align: center;
-  outline: none;
-}
-.cmp-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.vs { color: var(--text-muted); font-size: 0.8rem; }
-
-.compare-result { overflow-x: auto; }
-
-.cmp-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow);
-}
-.cmp-table th, .cmp-table td {
-  padding: 12px 16px;
-  text-align: center;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.88rem;
-}
-.cmp-table th:first-child, .cmp-table td:first-child {
-  text-align: left;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-.cmp-table thead th {
-  font-family: var(--mono);
-  font-weight: 700;
-  font-size: 1rem;
-  background: var(--surface-2);
-}
-.cmp-table td.win { color: var(--up); font-weight: 700; }
-.cmp-table td .mono { font-weight: 600; }
-
-/* ---------- Watchlist ---------- */
-.watchlist-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 14px;
+function annualVolatility(values) {
+  const rets = [];
+  for (let i = 1; i < values.length; i++) rets.push(values[i] / values[i - 1] - 1);
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length);
+  return sd * Math.sqrt(252) * 100; // %
 }
 
-.watch-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 16px;
-  cursor: pointer;
-  position: relative;
-  transition: border-color 150ms, transform 150ms;
-}
-.watch-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-
-.watch-head { display: flex; justify-content: space-between; align-items: baseline; }
-.watch-sym { font-family: var(--mono); font-weight: 700; font-size: 1rem; }
-.watch-score { font-family: var(--mono); font-weight: 700; }
-
-.watch-name { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.watch-row { display: flex; justify-content: space-between; margin-top: 10px; font-size: 0.8rem; }
-.watch-verdict { font-weight: 700; }
-.watch-verdict.buy { color: var(--up); }
-.watch-verdict.hold { color: var(--warn); }
-.watch-verdict.sell { color: var(--down); }
-.watch-date { font-size: 0.68rem; color: var(--text-muted); margin-top: 8px; }
-
-.watch-remove {
-  position: absolute;
-  top: 8px; right: 10px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 0.9rem;
-  opacity: 0;
-  transition: opacity 150ms;
-}
-.watch-card:hover .watch-remove { opacity: 1; }
-.watch-remove:hover { color: var(--down); }
-
-/* ---------- Footer ---------- */
-.site-footer {
-  border-top: 1px solid var(--border);
-  padding: 22px;
-  text-align: center;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-.site-footer p + p { margin-top: 6px; }
-
-/* ---------- Responsive ---------- */
-@media (max-width: 640px) {
-  .site-header { flex-wrap: wrap; }
-  .tabs { order: 3; width: 100%; justify-content: center; }
-  .verdict-card { flex-direction: column; text-align: center; }
-  .verdict-row, .verdict-actions { justify-content: center; }
-  .profile-card { flex-direction: column; text-align: center; }
-  .profile-right { text-align: center; }
-  #search-form { flex-direction: column; }
-  .stat-grid { grid-template-columns: 1fr; }
+function periodReturn(values, days) {
+  if (values.length <= days) return null;
+  return (values[values.length - 1] / values[values.length - 1 - days] - 1) * 100;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation: none !important; }
+const clamp = (n, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, n));
+
+/* ============================================================
+   SCORING — each factor returns { score, reasons[] }
+   ============================================================ */
+function scoreTechnical(t) {
+  let s = 50;
+  const why = [];
+  if (t.price > t.ma20) { s += 8; why.push("Price above MA20 (short-term uptrend)"); }
+  else { s -= 8; why.push("Price below MA20 (short-term weakness)"); }
+  if (t.price > t.ma50) { s += 8; why.push("Price above MA50 (medium-term uptrend)"); }
+  else { s -= 8; why.push("Price below MA50"); }
+  if (t.ma20 > t.ma50) { s += 6; why.push("MA20 above MA50 (bullish crossover)"); }
+  else { s -= 6; why.push("MA20 below MA50 (bearish alignment)"); }
+
+  if (t.rsi > 70) { s -= 10; why.push(`RSI ${t.rsi.toFixed(0)} — overbought`); }
+  else if (t.rsi < 30) { s += 8; why.push(`RSI ${t.rsi.toFixed(0)} — oversold, possible rebound`); }
+  else if (t.rsi >= 45 && t.rsi <= 65) { s += 6; why.push(`RSI ${t.rsi.toFixed(0)} — healthy zone`); }
+  else { why.push(`RSI ${t.rsi.toFixed(0)} — neutral`); }
+
+  if (t.macdHist > 0) { s += 8; why.push("MACD histogram positive (momentum building)"); }
+  else { s -= 6; why.push("MACD histogram negative"); }
+
+  if (t.boll > 0.95) { s -= 6; why.push("Pressing the upper Bollinger band (stretched)"); }
+  else if (t.boll < 0.05) { s += 4; why.push("Near lower Bollinger band"); }
+
+  return { score: clamp(Math.round(s)), reasons: why };
+}
+
+function scoreFundamental(m) {
+  let s = 50;
+  const why = [];
+  const pe = m.peTTM ?? m.peBasicExclExtraTTM;
+  if (pe && pe > 0) {
+    if (pe < 18) { s += 12; why.push(`P/E ${pe.toFixed(1)} — attractively valued`); }
+    else if (pe < 30) { s += 4; why.push(`P/E ${pe.toFixed(1)} — reasonable`); }
+    else if (pe < 50) { s -= 6; why.push(`P/E ${pe.toFixed(1)} — expensive`); }
+    else { s -= 12; why.push(`P/E ${pe.toFixed(1)} — very expensive`); }
+  } else { why.push("No positive P/E (unprofitable or data missing)"); s -= 4; }
+
+  const roe = m.roeTTM;
+  if (roe != null) {
+    if (roe > 20) { s += 10; why.push(`ROE ${roe.toFixed(1)}% — excellent profitability`); }
+    else if (roe > 10) { s += 5; why.push(`ROE ${roe.toFixed(1)}% — solid`); }
+    else if (roe < 0) { s -= 10; why.push(`ROE ${roe.toFixed(1)}% — losing money on equity`); }
+  }
+
+  const nm = m.netProfitMarginTTM;
+  if (nm != null) {
+    if (nm > 20) { s += 8; why.push(`Net margin ${nm.toFixed(1)}% — highly profitable`); }
+    else if (nm > 8) { s += 4; why.push(`Net margin ${nm.toFixed(1)}% — healthy`); }
+    else if (nm < 0) { s -= 8; why.push(`Negative net margin (${nm.toFixed(1)}%)`); }
+  }
+
+  const de = m["totalDebt/totalEquityQuarterly"];
+  if (de != null) {
+    if (de < 0.5) { s += 5; why.push(`Debt/equity ${de.toFixed(2)} — low leverage`); }
+    else if (de > 1.5) { s -= 6; why.push(`Debt/equity ${de.toFixed(2)} — heavy debt load`); }
+  }
+
+  const rg = m.revenueGrowthTTMYoy;
+  if (rg != null) {
+    if (rg > 20) { s += 8; why.push(`Revenue growing ${rg.toFixed(1)}% YoY — fast grower`); }
+    else if (rg > 5) { s += 4; why.push(`Revenue growing ${rg.toFixed(1)}% YoY`); }
+    else if (rg < 0) { s -= 8; why.push(`Revenue shrinking (${rg.toFixed(1)}% YoY)`); }
+  }
+
+  return { score: clamp(Math.round(s)), reasons: why };
+}
+
+function scoreMomentum(mom) {
+  let s = 50;
+  const why = [];
+  const bands = [
+    [mom.r1m, 1.5, "1-month"],
+    [mom.r3m, 1.0, "3-month"],
+    [mom.r6m, 0.6, "6-month"],
+  ];
+  for (const [r, w, label] of bands) {
+    if (r === null) continue;
+    const add = clamp(r * w, -14, 14);
+    s += add;
+    why.push(`${label} return ${fmtPct(r)}`);
+  }
+  if (mom.pos52 != null) {
+    if (mom.pos52 > 0.85) { s += 5; why.push("Trading near its 52-week high (strength)"); }
+    else if (mom.pos52 < 0.2) { s -= 5; why.push("Trading near its 52-week low"); }
+  }
+  return { score: clamp(Math.round(s)), reasons: why };
+}
+
+const POS_WORDS = ["beat", "beats", "surge", "record", "growth", "upgrade", "raise", "raises", "strong", "profit", "wins", "expansion", "rally", "soar", "outperform", "buy"];
+const NEG_WORDS = ["miss", "misses", "fall", "falls", "drop", "cut", "cuts", "downgrade", "lawsuit", "probe", "weak", "loss", "losses", "recall", "warning", "layoff", "decline", "plunge", "sell-off", "underperform"];
+
+function scoreSentiment(news) {
+  if (!news || !news.length) return { score: 50, reasons: ["No recent news found — neutral"] , tagged: [] };
+  let pos = 0, neg = 0;
+  const tagged = news.map((n) => {
+    const h = (n.headline || "").toLowerCase();
+    const p = POS_WORDS.some((w) => h.includes(w));
+    const g = NEG_WORDS.some((w) => h.includes(w));
+    let tag = "neu";
+    if (p && !g) { pos++; tag = "pos"; }
+    else if (g && !p) { neg++; tag = "neg"; }
+    return { ...n, tag };
+  });
+  const total = pos + neg;
+  let s = 50;
+  const why = [`${news.length} headlines scanned: ${pos} positive, ${neg} negative`];
+  if (total > 0) {
+    s = 50 + ((pos - neg) / news.length) * 45;
+    if (pos > neg) why.push("News flow leans positive");
+    else if (neg > pos) why.push("News flow leans negative");
+    else why.push("News flow is mixed");
+  } else why.push("Headlines are mostly neutral");
+  return { score: clamp(Math.round(s)), reasons: why, tagged };
+}
+
+function scoreAnalyst(recs) {
+  if (!recs) return { score: 50, reasons: ["No analyst coverage found — neutral"] };
+  const { strongBuy = 0, buy = 0, hold = 0, sell = 0, strongSell = 0 } = recs;
+  const total = strongBuy + buy + hold + sell + strongSell;
+  if (!total) return { score: 50, reasons: ["No analyst ratings available"] };
+  const raw = (2 * strongBuy + buy - sell - 2 * strongSell) / (2 * total); // -1..1
+  const s = clamp(Math.round(50 + raw * 50));
+  const why = [
+    `${total} analysts: ${strongBuy} strong buy, ${buy} buy, ${hold} hold, ${sell + strongSell} sell`,
+    raw > 0.3 ? "Street is clearly bullish" : raw < -0.1 ? "Street is cautious" : "Street is split",
+  ];
+  return { score: s, reasons: why };
+}
+
+/* ============================================================
+   ANALYSIS PIPELINE
+   ============================================================ */
+const WEIGHTS = { technical: 0.25, fundamental: 0.25, momentum: 0.20, sentiment: 0.15, analyst: 0.15 };
+const BUY_AT = 62, SELL_AT = 42; // calibrated thresholds
+
+async function analyze(symRaw) {
+  const sym = symRaw.trim().toUpperCase();
+  const cached = cacheGet(sym);
+  if (cached) return cached;
+
+  const b = await fetchBundle(sym);
+  const closes = b.rows.map((r) => r.close);
+  const price = b.quote.c;
+
+  const ma20a = sma(closes, 20), ma50a = sma(closes, 50);
+  const tech = {
+    price,
+    ma20: ma20a[ma20a.length - 1],
+    ma50: ma50a[ma50a.length - 1],
+    rsi: rsi(closes),
+    macdHist: macd(closes).hist,
+    boll: bollingerPosition(closes),
+    vol: annualVolatility(closes),
+  };
+
+  const high52 = b.metric["52WeekHigh"] ?? Math.max(...closes);
+  const low52 = b.metric["52WeekLow"] ?? Math.min(...closes);
+  const mom = {
+    r1m: periodReturn(closes, 21),
+    r3m: periodReturn(closes, 63),
+    r6m: periodReturn(closes, 126),
+    pos52: high52 > low52 ? (price - low52) / (high52 - low52) : 0.5,
+  };
+
+  const fTech = scoreTechnical(tech);
+  const fFund = scoreFundamental(b.metric);
+  const fMom = scoreMomentum(mom);
+  const fSent = scoreSentiment(b.news);
+  const fAna = scoreAnalyst(b.recs);
+
+  const factors = {
+    technical: fTech, fundamental: fFund, momentum: fMom, sentiment: fSent, analyst: fAna,
+  };
+
+  const overall = Math.round(
+    Object.entries(WEIGHTS).reduce((acc, [k, w]) => acc + factors[k].score * w, 0)
+  );
+  const verdict = overall >= BUY_AT ? "BUY" : overall <= SELL_AT ? "SELL" : "HOLD";
+
+  // confidence = how much the five factors agree
+  const scores = Object.values(factors).map((f) => f.score);
+  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const spread = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length);
+  const confidence = spread < 10 ? "High confidence" : spread < 18 ? "Medium confidence" : "Low confidence — factors disagree";
+
+  // risk 0..100 from beta + volatility
+  const beta = b.metric.beta ?? 1;
+  const risk = clamp(Math.round((clamp(beta, 0, 2.5) / 2.5) * 50 + (clamp(tech.vol, 0, 80) / 80) * 50));
+
+  const analysis = {
+    sym, price, bundle: b, tech, mom, factors, overall, verdict, confidence,
+    risk, high52, low52, rows: b.rows, taggedNews: fSent.tagged || [],
+    time: Date.now(), demo: b.demo, fellBack: b.fellBack || false,
+  };
+  analysis.summary = buildSummary(analysis);
+  cacheSet(sym, analysis);
+  return analysis;
+}
+
+function buildSummary(a) {
+  const name = a.bundle.profile.name || a.sym;
+  const entries = Object.entries(a.factors);
+  const best = entries.reduce((x, y) => (y[1].score > x[1].score ? y : x));
+  const worst = entries.reduce((x, y) => (y[1].score < x[1].score ? y : x));
+  const trend = a.tech.price > a.tech.ma50 ? "trading above its 50-day average" : "trading below its 50-day average";
+  const riskWord = a.risk > 66 ? "high" : a.risk > 40 ? "moderate" : "low";
+  const verdictLine =
+    a.verdict === "BUY" ? "the overall picture leans positive"
+    : a.verdict === "SELL" ? "the overall picture leans negative"
+    : "the picture is mixed, suggesting patience";
+  return `${name} scores ${a.overall}/100 — ${verdictLine}. Its strongest factor is ${best[0]} (${best[1].score}) while ${worst[0]} (${worst[1].score}) drags the score down. The stock is currently ${trend}, sits at ${(a.mom.pos52 * 100).toFixed(0)}% of its 52-week range, and carries ${riskWord} risk (beta ${fmtNum(a.bundle.metric.beta, 2)}, volatility ${a.tech.vol.toFixed(0)}%). ${a.confidence}. This is a model output for research — not financial advice.`;
+}
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+let current = null;
+
+function render(a) {
+  current = a;
+  const p = a.bundle.profile, q = a.bundle.quote, m = a.bundle.metric;
+
+  // profile
+  if (p.logo) { $("p-logo").src = p.logo; show($("p-logo")); } else hide($("p-logo"));
+  $("p-name").textContent = p.name || a.sym;
+  $("p-symbol").textContent = a.sym;
+  $("p-exchange").textContent = p.exchange || "—";
+  $("p-industry").textContent = p.finnhubIndustry || "—";
+  $("p-mcap").textContent = fmtCap(p.marketCapitalization);
+  $("p-price").textContent = "$" + fmtNum(q.c);
+  const chEl = $("p-change");
+  chEl.textContent = `${q.d >= 0 ? "+" : ""}${fmtNum(q.d)} (${fmtPct(q.dp)}) today`;
+  chEl.className = "p-change mono " + (q.d >= 0 ? "up" : "down");
+
+  // gauge + verdict
+  const C = 326.7;
+  const arc = $("gauge-arc");
+  arc.style.strokeDashoffset = C * (1 - a.overall / 100);
+  const color = a.verdict === "BUY" ? "var(--up)" : a.verdict === "SELL" ? "var(--down)" : "var(--warn)";
+  arc.style.stroke = color;
+  $("score-value").textContent = a.overall;
+  const vb = $("verdict-badge");
+  vb.textContent = a.verdict;
+  vb.className = "verdict-badge " + a.verdict.toLowerCase();
+  $("confidence").textContent = a.confidence + (a.demo ? " · demo data" : "");
+  $("summary-text").textContent = a.summary;
+
+  // watch button state
+  const inList = getWatchlist().some((w) => w.sym === a.sym);
+  const bw = $("btn-watch");
+  bw.textContent = inList ? "★ In watchlist" : "☆ Add to watchlist";
+  bw.classList.toggle("active", inList);
+
+  renderFactors(a);
+  window.lastRows = a.rows;
+  drawChart(a.rows);
+  renderRange(a);
+  renderMetricStrip(a);
+  renderFundamentals(m);
+  renderTechnicals(a.tech);
+  renderAnalyst(a.bundle.recs);
+  renderRisk(a);
+  renderNews(a);
+
+  show(resultsEl);
+}
+
+function factorColor(s) {
+  return s >= BUY_AT ? "var(--up)" : s <= SELL_AT ? "var(--down)" : "var(--warn)";
+}
+
+function renderFactors(a) {
+  const names = { technical: "Technical", fundamental: "Fundamental", momentum: "Momentum", sentiment: "Sentiment", analyst: "Analyst" };
+  $("factor-grid").innerHTML = Object.entries(a.factors)
+    .map(([k, f]) => `
+      <div class="factor-card" data-f="${k}">
+        <div class="factor-head">
+          <span class="factor-name">${names[k]} · ${(WEIGHTS[k] * 100).toFixed(0)}%</span>
+          <span class="factor-score" style="color:${factorColor(f.score)}">${f.score}</span>
+        </div>
+        <div class="factor-bar"><div class="factor-fill" style="background:${factorColor(f.score)}"></div></div>
+        <div class="factor-why">${f.reasons.map((r) => "• " + escapeHtml(r)).join("<br>")}</div>
+        <div class="factor-hint">click for details</div>
+      </div>`)
+    .join("");
+  // animate bars after insert
+  requestAnimationFrame(() => {
+    document.querySelectorAll(".factor-card").forEach((card) => {
+      const k = card.dataset.f;
+      card.querySelector(".factor-fill").style.width = a.factors[k].score + "%";
+      card.addEventListener("click", () => card.classList.toggle("open"));
+    });
+  });
+}
+
+function renderRange(a) {
+  $("range-low").textContent = "$" + fmtNum(a.low52);
+  $("range-high").textContent = "$" + fmtNum(a.high52);
+  $("range-marker").style.left = clamp(a.mom.pos52 * 100, 1, 99) + "%";
+}
+
+function renderMetricStrip(a) {
+  const cells = [
+    ["RSI (14)", a.tech.rsi.toFixed(0)],
+    ["1M return", fmtPct(a.mom.r1m)],
+    ["3M return", fmtPct(a.mom.r3m)],
+    ["6M return", fmtPct(a.mom.r6m)],
+    ["Volatility", a.tech.vol.toFixed(0) + "%"],
+    ["Beta", fmtNum(a.bundle.metric.beta, 2)],
+  ];
+  $("metric-strip").innerHTML = cells
+    .map(([k, v]) => `<div class="metric-cell"><div class="k">${k}</div><div class="v">${v}</div></div>`)
+    .join("");
+}
+
+function statRow(k, v, cls = "") {
+  return `<div class="stat-row"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+}
+
+function renderFundamentals(m) {
+  const pe = m.peTTM ?? m.peBasicExclExtraTTM;
+  const rows = [
+    ["P/E (TTM)", pe ? fmtNum(pe, 1) : "—", pe && pe < 25 ? "good" : pe > 45 ? "bad" : ""],
+    ["P/S (TTM)", m.psTTM ? fmtNum(m.psTTM, 1) : "—", ""],
+    ["EPS (TTM)", m.epsTTM ? "$" + fmtNum(m.epsTTM) : "—", ""],
+    ["ROE", m.roeTTM != null ? fmtNum(m.roeTTM, 1) + "%" : "—", m.roeTTM > 15 ? "good" : m.roeTTM < 0 ? "bad" : ""],
+    ["Net margin", m.netProfitMarginTTM != null ? fmtNum(m.netProfitMarginTTM, 1) + "%" : "—", m.netProfitMarginTTM > 15 ? "good" : m.netProfitMarginTTM < 0 ? "bad" : ""],
+    ["Gross margin", m.grossMarginTTM != null ? fmtNum(m.grossMarginTTM, 1) + "%" : "—", ""],
+    ["Debt / equity", m["totalDebt/totalEquityQuarterly"] != null ? fmtNum(m["totalDebt/totalEquityQuarterly"], 2) : "—", m["totalDebt/totalEquityQuarterly"] > 1.5 ? "bad" : ""],
+    ["Dividend yield", m.dividendYieldIndicatedAnnual ? fmtNum(m.dividendYieldIndicatedAnnual, 2) + "%" : "0%", ""],
+    ["Revenue growth YoY", m.revenueGrowthTTMYoy != null ? fmtPct(m.revenueGrowthTTMYoy) : "—", m.revenueGrowthTTMYoy > 10 ? "good" : m.revenueGrowthTTMYoy < 0 ? "bad" : ""],
+    ["Beta", m.beta != null ? fmtNum(m.beta, 2) : "—", ""],
+  ];
+  $("fundamentals-grid").innerHTML = rows.map((r) => statRow(...r)).join("");
+}
+
+function renderTechnicals(t) {
+  const rows = [
+    ["Price", "$" + fmtNum(t.price), ""],
+    ["MA20", "$" + fmtNum(t.ma20), t.price > t.ma20 ? "good" : "bad"],
+    ["MA50", "$" + fmtNum(t.ma50), t.price > t.ma50 ? "good" : "bad"],
+    ["RSI (14)", t.rsi.toFixed(1), t.rsi > 70 ? "bad" : t.rsi < 30 ? "good" : ""],
+    ["MACD histogram", fmtNum(t.macdHist, 3), t.macdHist > 0 ? "good" : "bad"],
+    ["Bollinger position", (t.boll * 100).toFixed(0) + "%", ""],
+    ["Annualized volatility", t.vol.toFixed(1) + "%", t.vol > 50 ? "bad" : ""],
+  ];
+  $("technicals-grid").innerHTML = rows.map((r) => statRow(...r)).join("");
+}
+
+function renderAnalyst(recs) {
+  const el = $("analyst-bars");
+  if (!recs) {
+    el.innerHTML = "";
+    $("analyst-note").textContent = "No analyst coverage found for this ticker.";
+    return;
+  }
+  const data = [
+    ["Strong buy", recs.strongBuy || 0, "var(--up)"],
+    ["Buy", recs.buy || 0, "#7fd4b8"],
+    ["Hold", recs.hold || 0, "var(--warn)"],
+    ["Sell", recs.sell || 0, "#e89795"],
+    ["Strong sell", recs.strongSell || 0, "var(--down)"],
+  ];
+  const max = Math.max(1, ...data.map((d) => d[1]));
+  el.innerHTML = data
+    .map(([k, n, c]) => `
+      <div class="abar">
+        <span class="k">${k}</span>
+        <div class="track"><div class="fill" data-w="${(n / max) * 100}" style="background:${c}"></div></div>
+        <span class="n">${n}</span>
+      </div>`)
+    .join("");
+  requestAnimationFrame(() => {
+    el.querySelectorAll(".fill").forEach((f) => (f.style.width = f.dataset.w + "%"));
+  });
+  const total = data.reduce((a, d) => a + d[1], 0);
+  $("analyst-note").textContent = `${total} analysts covering, latest month of ratings.`;
+}
+
+function renderRisk(a) {
+  $("risk-fill").style.width = a.risk + "%";
+  const word = a.risk > 66 ? "High" : a.risk > 40 ? "Moderate" : "Low";
+  $("risk-label").textContent = `${word} risk — based on beta (${fmtNum(a.bundle.metric.beta, 2)}) and 1-year volatility (${a.tech.vol.toFixed(0)}%).`;
+}
+
+function renderNews(a) {
+  const list = a.taggedNews.length ? a.taggedNews : (a.bundle.news || []).map((n) => ({ ...n, tag: "neu" }));
+  if (!list.length) {
+    $("news-list").innerHTML = `<li class="muted small">No recent news found.</li>`;
+    return;
+  }
+  const tagText = { pos: "POSITIVE", neg: "NEGATIVE", neu: "NEUTRAL" };
+  $("news-list").innerHTML = list
+    .slice(0, 6)
+    .map((n) => `
+      <li class="news-item">
+        <span class="sent-tag ${n.tag}">${tagText[n.tag]}</span>
+        <div>
+          <a href="${escapeHtml(n.url || "#")}" target="_blank" rel="noopener">${escapeHtml(n.headline)}</a>
+          <div class="news-meta">${escapeHtml(n.source || "")} · ${fmtDate((n.datetime || 0) * 1000)}</div>
+        </div>
+      </li>`)
+    .join("");
+}
+
+/* ============================================================
+   PRICE CHART (canvas, DPR-aware, with hover tooltip)
+   ============================================================ */
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+let chartGeo = null; // saved geometry for tooltip
+
+function drawChart(rows) {
+  const canvas = $("price-chart");
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const closes = rows.map((r) => r.close);
+  const ma20a = sma(closes, 20), ma50a = sma(closes, 50);
+  const pad = { l: 52, r: 12, t: 12, b: 24 };
+  const min = Math.min(...closes) * 0.98;
+  const max = Math.max(...closes) * 1.02;
+
+  const x = (i) => pad.l + (i / (rows.length - 1)) * (W - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (v - min) / (max - min)) * (H - pad.t - pad.b);
+  chartGeo = { x, y, rows, pad, W, H };
+
+  // gridlines + y labels
+  ctx.strokeStyle = cssVar("--border");
+  ctx.fillStyle = cssVar("--text-muted");
+  ctx.font = "10px " + cssVar("--mono");
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const v = min + ((max - min) * g) / 4;
+    const yy = y(v);
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+    ctx.fillText("$" + v.toFixed(v > 100 ? 0 : 1), 6, yy + 3);
+  }
+  // x labels (5 dates)
+  for (let g = 0; g <= 4; g++) {
+    const i = Math.round(((rows.length - 1) * g) / 4);
+    ctx.fillText(fmtDate(rows[i].date), x(i) - 14, H - 8);
+  }
+
+  // gradient fill under price
+  const grad = ctx.createLinearGradient(0, pad.t, 0, H - pad.b);
+  const accent = cssVar("--accent");
+  grad.addColorStop(0, accent + "44");
+  grad.addColorStop(1, accent + "00");
+  ctx.beginPath();
+  rows.forEach((r, i) => (i ? ctx.lineTo(x(i), y(r.close)) : ctx.moveTo(x(0), y(r.close))));
+  ctx.lineTo(x(rows.length - 1), H - pad.b);
+  ctx.lineTo(x(0), H - pad.b);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // helper for lines
+  function line(arr, color, width) {
+    ctx.beginPath();
+    let started = false;
+    arr.forEach((v, i) => {
+      if (v === null) return;
+      if (!started) { ctx.moveTo(x(i), y(v)); started = true; }
+      else ctx.lineTo(x(i), y(v));
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+
+  line(ma50a, cssVar("--ma50"), 1.4);
+  line(ma20a, cssVar("--ma20"), 1.4);
+  line(closes, accent, 2.2);
+}
+
+// hover tooltip
+$("price-chart").addEventListener("mousemove", (e) => {
+  if (!chartGeo) return;
+  const rect = e.target.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const { rows, x } = chartGeo;
+  let best = 0, bd = Infinity;
+  for (let i = 0; i < rows.length; i++) {
+    const d = Math.abs(x(i) - mx);
+    if (d < bd) { bd = d; best = i; }
+  }
+  const r = rows[best];
+  const tip = $("chart-tip");
+  tip.textContent = `${fmtDate(r.date)} · $${fmtNum(r.close)}`;
+  tip.style.left = Math.min(x(best) + 10, chartGeo.W - 130) + "px";
+  tip.style.top = "10px";
+  show(tip);
+});
+$("price-chart").addEventListener("mouseleave", () => hide($("chart-tip")));
+window.addEventListener("resize", () => { if (window.lastRows) drawChart(window.lastRows); });
+
+/* ============================================================
+   MAIN FLOW
+   ============================================================ */
+async function runAnalysis(symRaw) {
+  const sym = symRaw.trim().toUpperCase();
+  if (!sym) return;
+  hide(suggestionsEl);
+  input.value = sym;
+  setStatus(`Analyzing ${sym}…`, "loading");
+  hide(resultsEl);
+  try {
+    const a = await analyze(sym);
+    clearStatus();
+    if (a.demo) {
+      setStatus(a.fellBack
+        ? "Live data unavailable right now — showing demo data instead."
+        : "Demo mode — add your Finnhub key at the top of script.js for live data.", "notice");
+    }
+    render(a);
+    pushHistory(sym);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Could not analyze ${sym}. Check the ticker and try again.`, "error");
+  }
+}
+
+$("search-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  runAnalysis(input.value);
+});
+
+$("quick-chips").addEventListener("click", (e) => {
+  if (e.target.dataset.sym) runAnalysis(e.target.dataset.sym);
+});
+
+/* ============================================================
+   AUTOCOMPLETE
+   ============================================================ */
+let suggestTimer = null;
+let lastQuery = "";
+
+input.addEventListener("input", () => {
+  const q = input.value.trim();
+  clearTimeout(suggestTimer);
+  if (q.length < 2) { hide(suggestionsEl); return; }
+  suggestTimer = setTimeout(() => fetchSuggestions(q), 300);
+});
+
+async function fetchSuggestions(q) {
+  if (q === lastQuery) return;
+  lastQuery = q;
+  let results = [];
+  if (DEMO_MODE) {
+    results = Object.entries(DEMO_DB)
+      .filter(([s, m]) => s.startsWith(q.toUpperCase()) || m[0].toLowerCase().includes(q.toLowerCase()))
+      .map(([s, m]) => ({ symbol: s, description: m[0] }));
+  } else {
+    try {
+      const data = await finnhub("/search", { q });
+      results = (data.result || [])
+        .filter((r) => r.type === "Common Stock" && !r.symbol.includes("."))
+        .slice(0, 6);
+    } catch { results = []; }
+  }
+  if (!results.length) { hide(suggestionsEl); return; }
+  suggestionsEl.innerHTML = results
+    .slice(0, 6)
+    .map((r) => `
+      <div class="suggestion-item" data-sym="${escapeHtml(r.symbol)}">
+        <span class="suggestion-symbol">${escapeHtml(r.symbol)}</span>
+        <span class="suggestion-name">${escapeHtml(r.description || "")}</span>
+      </div>`)
+    .join("");
+  show(suggestionsEl);
+}
+
+suggestionsEl.addEventListener("click", (e) => {
+  const item = e.target.closest(".suggestion-item");
+  if (item) runAnalysis(item.dataset.sym);
+});
+
+document.addEventListener("click", (e) => {
+  if (!suggestionsEl.contains(e.target) && e.target !== input) hide(suggestionsEl);
+});
+
+/* ============================================================
+   WATCHLIST
+   ============================================================ */
+$("btn-watch").addEventListener("click", () => {
+  if (!current) return;
+  let w = getWatchlist();
+  if (w.some((x) => x.sym === current.sym)) {
+    w = w.filter((x) => x.sym !== current.sym);
+  } else {
+    w.unshift({
+      sym: current.sym,
+      name: current.bundle.profile.name || current.sym,
+      score: current.overall,
+      verdict: current.verdict,
+      price: current.price,
+      changePct: current.bundle.quote.dp,
+      t: Date.now(),
+    });
+  }
+  setWatchlist(w);
+  render(current); // refresh button state
+});
+
+function renderWatchlist() {
+  const w = getWatchlist();
+  const grid = $("watchlist-grid");
+  if (!w.length) { show($("watchlist-empty")); grid.innerHTML = ""; return; }
+  hide($("watchlist-empty"));
+  grid.innerHTML = w
+    .map((x) => `
+      <div class="watch-card" data-sym="${x.sym}">
+        <button class="watch-remove" data-remove="${x.sym}" title="Remove">✕</button>
+        <div class="watch-head">
+          <span class="watch-sym">${x.sym}</span>
+          <span class="watch-score" style="color:${factorColor(x.score)}">${x.score}</span>
+        </div>
+        <div class="watch-name">${escapeHtml(x.name)}</div>
+        <div class="watch-row">
+          <span class="mono">$${fmtNum(x.price)}</span>
+          <span class="watch-verdict ${x.verdict.toLowerCase()}">${x.verdict}</span>
+        </div>
+        <div class="watch-date">saved ${new Date(x.t).toLocaleDateString()}</div>
+      </div>`)
+    .join("");
+}
+
+$("watchlist-grid").addEventListener("click", (e) => {
+  const rm = e.target.dataset.remove;
+  if (rm) {
+    setWatchlist(getWatchlist().filter((x) => x.sym !== rm));
+    renderWatchlist();
+    return;
+  }
+  const card = e.target.closest(".watch-card");
+  if (card) {
+    document.querySelector('[data-tab="analyze"]').click();
+    runAnalysis(card.dataset.sym);
+  }
+});
+
+/* ============================================================
+   COMPARE MODE
+   ============================================================ */
+$("compare-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const syms = [$("cmp-1").value, $("cmp-2").value, $("cmp-3").value]
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  const unique = [...new Set(syms)];
+  const st = $("compare-status");
+  const out = $("compare-result");
+  if (unique.length < 2) {
+    st.textContent = "Enter at least two different tickers.";
+    st.className = "status error";
+    show(st); hide(out);
+    return;
+  }
+  st.textContent = `Comparing ${unique.join(" vs ")}…`;
+  st.className = "status loading";
+  show(st); hide(out);
+  try {
+    const results = await Promise.all(unique.map((s) => analyze(s)));
+    hide(st);
+    renderCompare(results);
+    show(out);
+  } catch (err) {
+    console.error(err);
+    st.textContent = "Comparison failed — check the tickers.";
+    st.className = "status error";
+  }
+});
+
+function renderCompare(list) {
+  const rowDefs = [
+    ["Price", (a) => "$" + fmtNum(a.price), null],
+    ["Today", (a) => fmtPct(a.bundle.quote.dp), (a) => a.bundle.quote.dp],
+    ["Overall score", (a) => `<span class="mono">${a.overall}</span>`, (a) => a.overall],
+    ["Verdict", (a) => `<span class="watch-verdict ${a.verdict.toLowerCase()}">${a.verdict}</span>`, null],
+    ["Technical", (a) => a.factors.technical.score, (a) => a.factors.technical.score],
+    ["Fundamental", (a) => a.factors.fundamental.score, (a) => a.factors.fundamental.score],
+    ["Momentum", (a) => a.factors.momentum.score, (a) => a.factors.momentum.score],
+    ["Sentiment", (a) => a.factors.sentiment.score, (a) => a.factors.sentiment.score],
+    ["Analyst", (a) => a.factors.analyst.score, (a) => a.factors.analyst.score],
+    ["P/E", (a) => { const pe = a.bundle.metric.peTTM ?? a.bundle.metric.peBasicExclExtraTTM; return pe ? fmtNum(pe, 1) : "—"; }, null],
+    ["Market cap", (a) => fmtCap(a.bundle.profile.marketCapitalization), null],
+    ["Risk", (a) => a.risk + "/100", (a) => -a.risk],
+    ["6M return", (a) => fmtPct(a.mom.r6m), (a) => a.mom.r6m ?? -Infinity],
+  ];
+
+  const head = `<tr><th></th>${list.map((a) => `<th>${a.sym}</th>`).join("")}</tr>`;
+  const body = rowDefs
+    .map(([label, fmt, val]) => {
+      let winner = -1;
+      if (val) {
+        const vals = list.map(val);
+        const max = Math.max(...vals);
+        if (isFinite(max)) winner = vals.indexOf(max);
+      }
+      const cells = list
+        .map((a, i) => `<td class="${i === winner ? "win" : ""}">${fmt(a)}</td>`)
+        .join("");
+      return `<tr><td>${label}</td>${cells}</tr>`;
+    })
+    .join("");
+
+  $("compare-result").innerHTML = `<table class="cmp-table"><thead>${head}</thead><tbody>${body}</tbody></table>
+    <p class="muted small center" style="margin-top:12px">Green = best in row · scores are model outputs, not advice.</p>`;
+}
+
+/* ============================================================
+   EXPORT + COPY
+   ============================================================ */
+$("btn-export").addEventListener("click", () => {
+  if (!current) return;
+  const data = {
+    symbol: current.sym,
+    generated: new Date(current.time).toISOString(),
+    price: current.price,
+    overallScore: current.overall,
+    verdict: current.verdict,
+    confidence: current.confidence,
+    risk: current.risk,
+    factors: Object.fromEntries(
+      Object.entries(current.factors).map(([k, f]) => [k, { score: f.score, reasons: f.reasons }])
+    ),
+    summary: current.summary,
+    demoData: current.demo,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${current.sym}_analysis.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+$("btn-copy").addEventListener("click", async () => {
+  if (!current) return;
+  try {
+    await navigator.clipboard.writeText(`${current.sym} — ${current.overall}/100 (${current.verdict})\n${current.summary}`);
+    $("btn-copy").textContent = "Copied ✓";
+    setTimeout(() => ($("btn-copy").textContent = "Copy summary"), 1500);
+  } catch {}
+});
+
+/* ============================================================
+   KEYBOARD SHORTCUTS
+   ============================================================ */
+document.addEventListener("keydown", (e) => {
+  const typing = ["INPUT", "TEXTAREA"].includes(document.activeElement.tagName);
+  if (e.key === "/" && !typing) {
+    e.preventDefault();
+    document.querySelector('[data-tab="analyze"]').click();
+    input.focus();
+  }
+  if ((e.key === "t" || e.key === "T") && !typing) toggleTheme();
+  if (e.key === "Escape") { hide(suggestionsEl); input.blur(); }
+});
+
+/* ============================================================
+   INIT
+   ============================================================ */
+updateWatchCount();
+renderHistory();
+if (DEMO_MODE) {
+  setStatus("Demo mode — paste your Finnhub key at the top of script.js for live data.", "notice");
 }
