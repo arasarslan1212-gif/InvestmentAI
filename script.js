@@ -1091,6 +1091,6 @@ document.addEventListener("keydown", (e) => {
    ============================================================ */
 updateWatchCount();
 renderHistory();
-if (!FINNHUB_KEY || FINNHUB_KEY === "YOUR_FINNHUB_KEY_HERE") {
+if (!FINNHUB_KEY || FINNHUB_KEY === "d978kb1r01qluk1jllpgd978kb1r01qluk1jllq0") {
   setStatus("No API key set — paste your Finnhub key on line 10 of script.js.", "error");
 }
