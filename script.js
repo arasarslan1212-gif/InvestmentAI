@@ -1,16 +1,14 @@
 /* ============================================================
-   MarketLens — script.js
-   5-factor stock analysis · live data (Finnhub + Stooq)
+   MarketLens — script.js  (LIVE ONLY — no demo mode)
+   5-factor stock analysis · Finnhub + Stooq
    Features: autocomplete, chart, compare, watchlist, history,
    caching, export, keyboard shortcuts, dark/light theme.
    ============================================================ */
 
 /* ---------------- CONFIG — EDIT THIS ---------------- */
-const FINNHUB_KEY = "d978kb1r01qluk1jllpgd978kb1r01qluk1jllq0"; // <<< paste your Finnhub API key between the quotes
+const FINNHUB_KEY = "YOUR_FINNHUB_KEY_HERE"; // <<< paste your Finnhub API key between the quotes
 const CACHE_MINUTES = 15;                    // how long an analysis stays cached
 /* ----------------------------------------------------- */
-
-const DEMO_MODE = !FINNHUB_KEY || FINNHUB_KEY === "d978kb1r01qluk1jllpgd978kb1r01qluk1jllq0";
 
 /* ============================================================
    DOM SHORTCUTS
@@ -72,7 +70,7 @@ function toggleTheme() {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next;
   localStorage.setItem("theme", next);
-  if (window.lastRows) drawChart(window.lastRows); // redraw chart in new colors
+  if (window.lastRows) drawChart(window.lastRows.slice(-chartDays)); // redraw chart in new colors
 }
 $("theme-toggle").addEventListener("click", toggleTheme);
 
@@ -135,123 +133,41 @@ function cacheSet(sym, data) {
 }
 
 /* ============================================================
-   DEMO DATA (used when no API key is set, or as a fallback)
-   ============================================================ */
-const DEMO_DB = {
-  AAPL: ["Apple Inc", "NASDAQ", "Consumer Electronics", 3400000, 232],
-  MSFT: ["Microsoft Corp", "NASDAQ", "Software", 3600000, 470],
-  NVDA: ["NVIDIA Corp", "NASDAQ", "Semiconductors", 3900000, 158],
-  TSLA: ["Tesla Inc", "NASDAQ", "Automobiles", 1050000, 330],
-  V:    ["Visa Inc", "NYSE", "Financial Services", 640000, 350],
-  NVO:  ["Novo Nordisk", "NYSE", "Pharmaceuticals", 310000, 70],
-  SOFI: ["SoFi Technologies", "NASDAQ", "Fintech", 18000, 16],
-  CEG:  ["Constellation Energy", "NASDAQ", "Utilities", 95000, 300],
-  RTX:  ["RTX Corporation", "NYSE", "Aerospace & Defense", 180000, 135],
-  ALAB: ["Astera Labs", "NASDAQ", "Semiconductors", 15000, 90],
-};
-
-function hashCode(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
-  return h >>> 0;
-}
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function demoBundle(sym) {
-  const rng = mulberry32(hashCode(sym));
-  const meta = DEMO_DB[sym] || [sym + " Corp", "NYSE", "Diversified", 5000 + rng() * 200000, 20 + rng() * 300];
-  const [name, exchange, industry, mcap, basePrice] = meta;
-
-  // price history: 252-day random walk with a per-ticker drift
-  const drift = (rng() - 0.42) * 0.0022;
-  const vol = 0.012 + rng() * 0.014;
-  const rows = [];
-  let p = basePrice * (0.75 + rng() * 0.3);
-  const today = Date.now();
-  for (let i = 251; i >= 0; i--) {
-    p = Math.max(1, p * (1 + drift + (rng() - 0.5) * 2 * vol));
-    rows.push({ date: new Date(today - i * 86400000), close: p });
-  }
-  const price = rows[rows.length - 1].close;
-  const prev = rows[rows.length - 2].close;
-
-  const total = 8 + Math.floor(rng() * 25);
-  const sb = Math.floor(rng() * total * 0.4);
-  const b = Math.floor(rng() * (total - sb) * 0.6);
-  const h = Math.floor(rng() * (total - sb - b) * 0.8);
-  const s = Math.floor(rng() * (total - sb - b - h));
-  const ss = total - sb - b - h - s;
-
-  const headlines = [
-    [`${name} beats quarterly earnings expectations`, "pos"],
-    [`Analysts raise price target on ${sym} after strong growth`, "pos"],
-    [`${name} announces new product expansion plans`, "pos"],
-    [`${name} faces rising competition, margins under watch`, "neg"],
-    [`Market volatility weighs on ${sym} shares`, "neg"],
-    [`${name} schedules next earnings call`, "neu"],
-    [`Institutional investors adjust positions in ${sym}`, "neu"],
-  ];
-  const news = headlines
-    .sort(() => rng() - 0.5)
-    .slice(0, 5)
-    .map((x, i) => ({
-      headline: x[0],
-      url: "#",
-      datetime: (today - i * 86400000 * 2) / 1000,
-      source: ["Reuters", "Bloomberg", "MarketWatch", "CNBC"][Math.floor(rng() * 4)],
-    }));
-
-  const high52 = Math.max(...rows.map((r) => r.close));
-  const low52 = Math.min(...rows.map((r) => r.close));
-
-  return {
-    profile: { name, exchange, finnhubIndustry: industry, marketCapitalization: mcap, logo: "" },
-    quote: { c: price, d: price - prev, dp: ((price - prev) / prev) * 100, pc: prev },
-    metric: {
-      peTTM: 12 + rng() * 45,
-      psTTM: 2 + rng() * 15,
-      roeTTM: 5 + rng() * 35,
-      netProfitMarginTTM: 4 + rng() * 30,
-      grossMarginTTM: 25 + rng() * 50,
-      "totalDebt/totalEquityQuarterly": rng() * 1.6,
-      dividendYieldIndicatedAnnual: rng() < 0.4 ? rng() * 3 : 0,
-      beta: 0.6 + rng() * 1.6,
-      revenueGrowthTTMYoy: -5 + rng() * 40,
-      epsTTM: 1 + rng() * 12,
-      "52WeekHigh": high52,
-      "52WeekLow": low52,
-    },
-    recs: { strongBuy: sb, buy: b, hold: h, sell: s, strongSell: ss },
-    news,
-    rows,
-  };
-}
-
-/* ============================================================
-   DATA LAYER (Finnhub + Stooq)
+   DATA LAYER (Finnhub + Stooq) — LIVE ONLY
    ============================================================ */
 async function finnhub(path, params = {}) {
   const url = new URL("https://finnhub.io/api/v1" + path);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   url.searchParams.set("token", FINNHUB_KEY);
   const res = await fetch(url);
-  if (!res.ok) throw new Error("Finnhub " + res.status);
+  if (res.status === 401) throw new Error("Finnhub 401 — API key invalid or missing (check line 10 of script.js)");
+  if (res.status === 429) throw new Error("Finnhub 429 — rate limit hit, wait a minute and try again");
+  if (!res.ok) throw new Error("Finnhub error " + res.status);
   return res.json();
 }
 
 async function stooqHistory(sym) {
   // Stooq uses lowercase symbols, dots become dashes, US suffix
   const s = sym.toLowerCase().replace(/\./g, "-") + ".us";
-  const res = await fetch(`https://stooq.com/q/d/l/?s=${s}&i=d`);
-  if (!res.ok) throw new Error("Stooq " + res.status);
-  const csv = await res.text();
+  const stooqUrl = `https://stooq.com/q/d/l/?s=${s}&i=d`;
+
+  let csv = null;
+
+  // Attempt 1: direct fetch
+  try {
+    const res = await fetch(stooqUrl);
+    if (res.ok) csv = await res.text();
+  } catch (e) {
+    console.warn("Stooq direct fetch blocked (CORS), retrying via proxy…");
+  }
+
+  // Attempt 2: CORS proxy fallback
+  if (!csv) {
+    const res = await fetch("https://corsproxy.io/?url=" + encodeURIComponent(stooqUrl));
+    if (!res.ok) throw new Error("Stooq unreachable (direct + proxy both failed)");
+    csv = await res.text();
+  }
+
   const lines = csv.trim().split("\n").slice(1); // drop header
   const rows = lines
     .map((l) => {
@@ -259,40 +175,32 @@ async function stooqHistory(sym) {
       return { date: new Date(date), close: parseFloat(close) };
     })
     .filter((r) => !isNaN(r.close));
-  if (rows.length < 60) throw new Error("Not enough price history");
+  if (rows.length < 60) throw new Error("Stooq returned no price history for " + sym.toUpperCase() + " — ticker may not exist on Stooq");
   return rows.slice(-252); // ~1 trading year
 }
 
 async function fetchBundle(sym) {
-  if (DEMO_MODE) return { ...demoBundle(sym), demo: true };
-
   const to = new Date();
   const from = new Date(Date.now() - 30 * 86400000);
   const d = (x) => x.toISOString().slice(0, 10);
 
-  try {
-    const [profile, quote, metricRes, recsArr, news, rows] = await Promise.all([
-      finnhub("/stock/profile2", { symbol: sym }),
-      finnhub("/quote", { symbol: sym }),
-      finnhub("/stock/metric", { symbol: sym, metric: "all" }),
-      finnhub("/stock/recommendation", { symbol: sym }),
-      finnhub("/company-news", { symbol: sym, from: d(from), to: d(to) }),
-      stooqHistory(sym),
-    ]);
-    if (!quote || !quote.c) throw new Error("No quote — check the ticker");
-    return {
-      profile: profile || {},
-      quote,
-      metric: (metricRes && metricRes.metric) || {},
-      recs: (recsArr && recsArr[0]) || null,
-      news: (news || []).slice(0, 6),
-      rows,
-      demo: false,
-    };
-  } catch (err) {
-    console.warn("Live data failed, using demo fallback:", err);
-    return { ...demoBundle(sym), demo: true, fellBack: true };
-  }
+  const [profile, quote, metricRes, recsArr, news, rows] = await Promise.all([
+    finnhub("/stock/profile2", { symbol: sym }),
+    finnhub("/quote", { symbol: sym }),
+    finnhub("/stock/metric", { symbol: sym, metric: "all" }),
+    finnhub("/stock/recommendation", { symbol: sym }),
+    finnhub("/company-news", { symbol: sym, from: d(from), to: d(to) }),
+    stooqHistory(sym),
+  ]);
+  if (!quote || !quote.c) throw new Error("No quote returned — check the ticker symbol");
+  return {
+    profile: profile || {},
+    quote,
+    metric: (metricRes && metricRes.metric) || {},
+    recs: (recsArr && recsArr[0]) || null,
+    news: (news || []).slice(0, 6),
+    rows,
+  };
 }
 
 /* ============================================================
@@ -469,7 +377,7 @@ const POS_WORDS = ["beat", "beats", "surge", "record", "growth", "upgrade", "rai
 const NEG_WORDS = ["miss", "misses", "fall", "falls", "drop", "cut", "cuts", "downgrade", "lawsuit", "probe", "weak", "loss", "losses", "recall", "warning", "layoff", "decline", "plunge", "sell-off", "underperform"];
 
 function scoreSentiment(news) {
-  if (!news || !news.length) return { score: 50, reasons: ["No recent news found — neutral"] , tagged: [] };
+  if (!news || !news.length) return { score: 50, reasons: ["No recent news found — neutral"], tagged: [] };
   let pos = 0, neg = 0;
   const tagged = news.map((n) => {
     const h = (n.headline || "").toLowerCase();
@@ -569,7 +477,7 @@ async function analyze(symRaw) {
   const analysis = {
     sym, price, bundle: b, tech, mom, factors, overall, verdict, confidence,
     risk, high52, low52, rows: b.rows, taggedNews: fSent.tagged || [],
-    time: Date.now(), demo: b.demo, fellBack: b.fellBack || false,
+    time: Date.now(),
   };
   analysis.summary = buildSummary(analysis);
   cacheSet(sym, analysis);
@@ -595,6 +503,18 @@ function buildSummary(a) {
    ============================================================ */
 let current = null;
 
+function animateScore(target) {
+  const el = $("score-value");
+  const start = performance.now();
+  const dur = 800;
+  function step(now) {
+    const p = Math.min(1, (now - start) / dur);
+    el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3))); // ease-out
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
 function render(a) {
   current = a;
   const p = a.bundle.profile, q = a.bundle.quote, m = a.bundle.metric;
@@ -617,11 +537,11 @@ function render(a) {
   arc.style.strokeDashoffset = C * (1 - a.overall / 100);
   const color = a.verdict === "BUY" ? "var(--up)" : a.verdict === "SELL" ? "var(--down)" : "var(--warn)";
   arc.style.stroke = color;
-  $("score-value").textContent = a.overall;
+  animateScore(a.overall);
   const vb = $("verdict-badge");
   vb.textContent = a.verdict;
   vb.className = "verdict-badge " + a.verdict.toLowerCase();
-  $("confidence").textContent = a.confidence + (a.demo ? " · demo data" : "");
+  $("confidence").textContent = a.confidence;
   $("summary-text").textContent = a.summary;
 
   // watch button state
@@ -632,7 +552,7 @@ function render(a) {
 
   renderFactors(a);
   window.lastRows = a.rows;
-  drawChart(a.rows);
+  drawChart(a.rows.slice(-chartDays));
   renderRange(a);
   renderMetricStrip(a);
   renderFundamentals(m);
@@ -789,7 +709,17 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-let chartGeo = null; // saved geometry for tooltip
+let chartGeo = null;   // saved geometry for tooltip
+let chartDays = 252;   // visible range: 63 = 3M, 126 = 6M, 252 = 1Y
+
+document.querySelectorAll(".range-btn").forEach((b) => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".range-btn").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    chartDays = parseInt(b.dataset.days, 10);
+    if (window.lastRows) drawChart(window.lastRows.slice(-chartDays));
+  });
+});
 
 function drawChart(rows) {
   const canvas = $("price-chart");
@@ -860,26 +790,50 @@ function drawChart(rows) {
   line(closes, accent, 2.2);
 }
 
-// hover tooltip
+// hover crosshair + tooltip
 $("price-chart").addEventListener("mousemove", (e) => {
   if (!chartGeo) return;
   const rect = e.target.getBoundingClientRect();
   const mx = e.clientX - rect.left;
-  const { rows, x } = chartGeo;
+  const { rows, pad, H } = chartGeo;
   let best = 0, bd = Infinity;
   for (let i = 0; i < rows.length; i++) {
-    const d = Math.abs(x(i) - mx);
+    const d = Math.abs(chartGeo.x(i) - mx);
     if (d < bd) { bd = d; best = i; }
   }
   const r = rows[best];
+
+  // redraw base chart, then overlay crosshair + point
+  drawChart(rows);
+  const ctx = $("price-chart").getContext("2d");
+  const px = chartGeo.x(best), py = chartGeo.y(r.close);
+  ctx.strokeStyle = cssVar("--text-muted");
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(px, pad.t);
+  ctx.lineTo(px, H - pad.b);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+  ctx.fillStyle = cssVar("--accent");
+  ctx.fill();
+  ctx.strokeStyle = cssVar("--bg");
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
   const tip = $("chart-tip");
   tip.textContent = `${fmtDate(r.date)} · $${fmtNum(r.close)}`;
-  tip.style.left = Math.min(x(best) + 10, chartGeo.W - 130) + "px";
+  tip.style.left = Math.min(px + 10, chartGeo.W - 130) + "px";
   tip.style.top = "10px";
   show(tip);
 });
-$("price-chart").addEventListener("mouseleave", () => hide($("chart-tip")));
-window.addEventListener("resize", () => { if (window.lastRows) drawChart(window.lastRows); });
+$("price-chart").addEventListener("mouseleave", () => {
+  hide($("chart-tip"));
+  if (chartGeo) drawChart(chartGeo.rows); // clear crosshair
+});
+window.addEventListener("resize", () => { if (window.lastRows) drawChart(window.lastRows.slice(-chartDays)); });
 
 /* ============================================================
    MAIN FLOW
@@ -894,16 +848,11 @@ async function runAnalysis(symRaw) {
   try {
     const a = await analyze(sym);
     clearStatus();
-    if (a.demo) {
-      setStatus(a.fellBack
-        ? "Live data unavailable right now — showing demo data instead."
-        : "Demo mode — add your Finnhub key at the top of script.js for live data.", "notice");
-    }
     render(a);
     pushHistory(sym);
   } catch (err) {
     console.error(err);
-    setStatus(`Could not analyze ${sym}. Check the ticker and try again.`, "error");
+    setStatus(err.message || `Could not analyze ${sym}.`, "error");
   }
 }
 
@@ -917,7 +866,7 @@ $("quick-chips").addEventListener("click", (e) => {
 });
 
 /* ============================================================
-   AUTOCOMPLETE
+   AUTOCOMPLETE (Finnhub symbol search)
    ============================================================ */
 let suggestTimer = null;
 let lastQuery = "";
@@ -933,21 +882,14 @@ async function fetchSuggestions(q) {
   if (q === lastQuery) return;
   lastQuery = q;
   let results = [];
-  if (DEMO_MODE) {
-    results = Object.entries(DEMO_DB)
-      .filter(([s, m]) => s.startsWith(q.toUpperCase()) || m[0].toLowerCase().includes(q.toLowerCase()))
-      .map(([s, m]) => ({ symbol: s, description: m[0] }));
-  } else {
-    try {
-      const data = await finnhub("/search", { q });
-      results = (data.result || [])
-        .filter((r) => r.type === "Common Stock" && !r.symbol.includes("."))
-        .slice(0, 6);
-    } catch { results = []; }
-  }
+  try {
+    const data = await finnhub("/search", { q });
+    results = (data.result || [])
+      .filter((r) => r.type === "Common Stock" && !r.symbol.includes("."))
+      .slice(0, 6);
+  } catch { results = []; }
   if (!results.length) { hide(suggestionsEl); return; }
   suggestionsEl.innerHTML = results
-    .slice(0, 6)
     .map((r) => `
       <div class="suggestion-item" data-sym="${escapeHtml(r.symbol)}">
         <span class="suggestion-symbol">${escapeHtml(r.symbol)}</span>
@@ -1053,7 +995,7 @@ $("compare-form").addEventListener("submit", async (e) => {
     show(out);
   } catch (err) {
     console.error(err);
-    st.textContent = "Comparison failed — check the tickers.";
+    st.textContent = err.message || "Comparison failed — check the tickers.";
     st.className = "status error";
   }
 });
@@ -1112,7 +1054,6 @@ $("btn-export").addEventListener("click", () => {
       Object.entries(current.factors).map(([k, f]) => [k, { score: f.score, reasons: f.reasons }])
     ),
     summary: current.summary,
-    demoData: current.demo,
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
@@ -1150,6 +1091,6 @@ document.addEventListener("keydown", (e) => {
    ============================================================ */
 updateWatchCount();
 renderHistory();
-if (DEMO_MODE) {
-  setStatus("Demo mode — paste your Finnhub key at the top of script.js for live data.", "notice");
+if (!FINNHUB_KEY || FINNHUB_KEY === "YOUR_FINNHUB_KEY_HERE") {
+  setStatus("No API key set — paste your Finnhub key on line 10 of script.js.", "error");
 }
