@@ -6,7 +6,7 @@
    ============================================================ */
 
 /* ---------------- CONFIG — EDIT THIS ---------------- */
-const FINNHUB_KEY = "YOUR_FINNHUB_KEY_HERE"; // <<< paste your Finnhub API key between the quotes
+const FINNHUB_KEY = "d978kb1r01qluk1jllpgd978kb1r01qluk1jllq0"; // <<< paste your Finnhub API key between the quotes
 const CACHE_MINUTES = 15;                    // how long an analysis stays cached
 /* ----------------------------------------------------- */
 
